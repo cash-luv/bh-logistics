@@ -552,12 +552,14 @@ class FirestoreService {
     );
   }
 
-  /// 운행 중 주유 영수증 첨부 및 주유카드 결제 금액을 오늘 DailyLogs에 누적 기록합니다.
+  /// 운행 중 주유 영수증 첨부 및 주유카드 결제 금액(기타 품목 포함)을 오늘 DailyLogs에 누적 기록합니다.
   static Future<DriverHomeInfo> saveFuelReceipt({
     required String driverId,
     required String localPhotoPath,
     required int fuelCostWon,
     double? fuelLiters,
+    List<Map<String, dynamic>>? extraItems,
+    String? extraItemsSummary,
     required DriverHomeInfo currentHomeInfo,
     void Function(String stepMessage)? onProgress,
   }) async {
@@ -572,7 +574,7 @@ class FirestoreService {
       localPhotoPath: localPhotoPath,
     );
 
-    onProgress?.call('주유 금액을 기록하는 중...');
+    onProgress?.call('주유 내역 및 품목을 기록하는 중...');
     final dailyLogRef = _db.collection('DailyLogs').doc(docId);
     final snap = await dailyLogRef.get();
     final data = snap.data() ?? {};
@@ -588,18 +590,21 @@ class FirestoreService {
     final hh = kst.hour.toString().padLeft(2, '0');
     final mm = kst.minute.toString().padLeft(2, '0');
 
+    final receiptEntry = <String, dynamic>{
+      'photoPath': storagePath,
+      'amount': fuelCostWon,
+      'liters': fuelLiters,
+      'recordedAtKst': '$hh:$mm',
+      if (extraItems != null && extraItems.isNotEmpty) 'extraItems': extraItems,
+      if (extraItemsSummary != null && extraItemsSummary.isNotEmpty)
+        'extraItemsSummary': extraItemsSummary,
+    };
+
     await dailyLogRef.set(
       {
         'actualFuelCost': newTotalCost,
         'actualFuelLiters': newTotalLiters,
-        'fuelReceipts': FieldValue.arrayUnion([
-          {
-            'photoPath': storagePath,
-            'amount': fuelCostWon,
-            'liters': fuelLiters,
-            'recordedAtKst': '$hh:$mm',
-          }
-        ]),
+        'fuelReceipts': FieldValue.arrayUnion([receiptEntry]),
         'updatedAt': FieldValue.serverTimestamp(),
       },
       SetOptions(merge: true),

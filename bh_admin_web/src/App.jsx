@@ -37,7 +37,13 @@ import {
   Legend,
 } from 'recharts';
 import { auth, db, storage, secondaryAuth } from './firebase';
-import { calcDday, formatKstTime, todayKstStr } from './utils/format';
+import {
+  calcDday,
+  formatKstTime,
+  todayKstStr,
+  formatNumberWithCommas,
+  parseNumberWithoutCommas,
+} from './utils/format';
 import { exportMonthlySettlementExcel } from './utils/excel';
 import { seedSampleData } from './services/seedService';
 import {
@@ -1073,7 +1079,7 @@ function DailyLogsView({ adminUid, presetDriverId, onClearPresetDriver }) {
   // 퇴근 누락 건 관리자 보정
   const handleCompleteMissingCheckout = async () => {
     if (!selectedLog) return;
-    const endKm = Number(fixEndKm);
+    const endKm = parseNumberWithoutCommas(fixEndKm);
     const startKm = Number(selectedLog.startOdometerKm) || 0;
     if (!endKm || endKm < startKm) {
       alert('종료 주행거리는 시작 주행거리 이상이어야 합니다.');
@@ -1608,6 +1614,11 @@ function DailyLogsView({ adminUid, presetDriverId, onClearPresetDriver }) {
                           {r.liters ? ` (${r.liters}L)` : ''} ·{' '}
                           {r.recordedAtKst || ''}
                         </div>
+                        {r.extraItemsSummary && (
+                          <div className="inline-block px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 font-semibold text-[11px]">
+                            🛒 {r.extraItemsSummary}
+                          </div>
+                        )}
                         {photoUrls[`fuel_${idx}`] ? (
                           <a
                             href={photoUrls[`fuel_${idx}`]}
@@ -1704,10 +1715,11 @@ function DailyLogsView({ adminUid, presetDriverId, onClearPresetDriver }) {
                 </div>
                 <div className="flex gap-2">
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     value={fixEndKm}
-                    onChange={(e) => setFixEndKm(e.target.value)}
-                    placeholder="종료 주행거리 km"
+                    onChange={(e) => setFixEndKm(formatNumberWithCommas(e.target.value))}
+                    placeholder="종료 주행거리 km (예: 125,000)"
                     className="flex-1 px-3 py-2 border rounded-xl bg-white"
                   />
                   <button
@@ -2058,7 +2070,7 @@ function VehiclesView({ presetFilter, onSelectVehicle }) {
     setManufacturer(v.manufacturer || '현대');
     setModel(v.model || '');
     setModelYear(String(v.modelYear || 2023));
-    setOdometerKm(String(v.odometerKm ?? 0));
+    setOdometerKm(formatNumberWithCommas(v.odometerKm ?? 0));
     setFuelEfficiencyKmPerL(String(v.fuelEfficiencyKmPerL || 5.5));
     setInspectionDueDate(v.inspectionDueDate || todayKstStr());
     setModalDriverId(v.assignedDriverId || '');
@@ -2087,7 +2099,7 @@ function VehiclesView({ presetFilter, onSelectVehicle }) {
           manufacturer: manufacturer.trim() || '현대',
           model: model.trim() || '카고',
           modelYear: Number(modelYear) || 2023,
-          odometerKm: Math.max(0, Number(odometerKm) || 0),
+          odometerKm: Math.max(0, parseNumberWithoutCommas(odometerKm)),
           fuelEfficiencyKmPerL: Number(fuelEfficiencyKmPerL) || 5.5,
           status: 'idle',
           assignedDriverId: null,
@@ -2108,7 +2120,7 @@ function VehiclesView({ presetFilter, onSelectVehicle }) {
             manufacturer: manufacturer.trim() || '현대',
             model: model.trim() || '카고',
             modelYear: Number(modelYear) || 2023,
-            odometerKm: Math.max(0, Number(odometerKm) || 0),
+            odometerKm: Math.max(0, parseNumberWithoutCommas(odometerKm)),
             fuelEfficiencyKmPerL: Number(fuelEfficiencyKmPerL) || 5.5,
             inspectionDueDate: inspectionDueDate || todayKstStr(),
             updatedAt: serverTimestamp(),
@@ -2600,10 +2612,11 @@ function VehiclesView({ presetFilter, onSelectVehicle }) {
                     5. 현재 누적 주행거리 (km)
                   </label>
                   <input
-                    type="number"
-                    placeholder="예: 125000"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="예: 125,000"
                     value={odometerKm}
-                    onChange={(e) => setOdometerKm(e.target.value)}
+                    onChange={(e) => setOdometerKm(formatNumberWithCommas(e.target.value))}
                     className="w-full px-3 py-2.5 border rounded-xl font-black text-[#1E5EFF]"
                   />
                 </div>
@@ -2848,7 +2861,7 @@ function VehicleDetailView({ vehicleId, adminUid, onBack }) {
       status: 'planned',
       yearMonth: todayKstStr().slice(0, 7),
       odometerKm: Number(vehicle.odometerKm) || 0,
-      dueOdometerKm: dueOdometerKm ? Number(dueOdometerKm) : null,
+      dueOdometerKm: dueOdometerKm ? parseNumberWithoutCommas(dueOdometerKm) : null,
       cost: 0,
       vendor: '',
       source: 'admin',
@@ -3135,10 +3148,11 @@ function VehicleDetailView({ vehicleId, adminUid, onBack }) {
             className="px-3 py-2 border rounded-xl bg-white"
           />
           <input
-            type="number"
-            placeholder="다음 교체 주행거리 km (선택)"
+            type="text"
+            inputMode="numeric"
+            placeholder="다음 교체 주행거리 km (선택, 예: 130,000)"
             value={dueOdometerKm}
-            onChange={(e) => setDueOdometerKm(e.target.value)}
+            onChange={(e) => setDueOdometerKm(formatNumberWithCommas(e.target.value))}
             className="px-3 py-2 border rounded-xl bg-white"
           />
           <button
@@ -3234,7 +3248,7 @@ function DriversView() {
   const [msg, setMsg] = useState('');
 
   // 기사앱 버전 배포 알림 설정 상태 (Settings/appVersion)
-  const [latestAppVersion, setLatestAppVersion] = useState('1.0.2');
+  const [latestAppVersion, setLatestAppVersion] = useState('1.0.3');
   const [apkUrl, setApkUrl] = useState(
     'https://bh-logistics-f45d8.web.app/bh-driver.apk'
   );
@@ -3973,9 +3987,9 @@ function RoutesView() {
     await addDoc(collection(db, 'Routes'), {
       name: finalName,
       stops,
-      price: Number(price) || 0,
-      expectedKm: Number(expectedKm) || 0,
-      isVariableKm: Number(expectedKm) === 0,
+      price: parseNumberWithoutCommas(price),
+      expectedKm: parseNumberWithoutCommas(expectedKm),
+      isVariableKm: parseNumberWithoutCommas(expectedKm) === 0,
       kmTolerancePct: 100,
       isActive: true,
       sortOrder: routes.length + 1,
@@ -3992,12 +4006,12 @@ function RoutesView() {
   const handleUpdatePrice = async (r) => {
     const nextPrice = window.prompt(
       `[${r.name}] 노선의 단가(원)를 입력해 주세요 (미정이면 0).\n이미 출근한 기록의 단가는 바뀌지 않고 앞으로 출근하는 기록부터 적용됩니다:`,
-      String(r.price || 0)
+      (r.price || 0).toLocaleString('ko-KR')
     );
     if (nextPrice === null) return;
     await setDoc(
       doc(db, 'Routes', r.id),
-      { price: Number(nextPrice) || 0, updatedAt: serverTimestamp() },
+      { price: parseNumberWithoutCommas(nextPrice), updatedAt: serverTimestamp() },
       { merge: true }
     );
     loadRoutes();
@@ -4199,9 +4213,11 @@ function RoutesView() {
                     단가(원) - 미정이면 0
                   </label>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     value={price}
-                    onChange={(e) => setPrice(e.target.value)}
+                    onChange={(e) => setPrice(formatNumberWithCommas(e.target.value))}
+                    placeholder="예: 250,000"
                     className="w-full px-3 py-2 border rounded-xl"
                   />
                 </div>
@@ -4210,9 +4226,11 @@ function RoutesView() {
                     예상 거리(km) - 실측산정이면 0
                   </label>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     value={expectedKm}
-                    onChange={(e) => setExpectedKm(e.target.value)}
+                    onChange={(e) => setExpectedKm(formatNumberWithCommas(e.target.value))}
+                    placeholder="예: 180"
                     className="w-full px-3 py-2 border rounded-xl"
                   />
                 </div>
@@ -4604,9 +4622,10 @@ function SettlementsView({ adminUid, onSelectDriverLogs }) {
             기준 경유 단가(원/L):
           </span>
           <input
-            type="number"
-            value={dieselPrice}
-            onChange={(e) => setDieselPrice(Number(e.target.value) || 0)}
+            type="text"
+            inputMode="numeric"
+            value={formatNumberWithCommas(dieselPrice)}
+            onChange={(e) => setDieselPrice(parseNumberWithoutCommas(e.target.value))}
             className="w-28 px-3 py-1.5 rounded-xl border border-emerald-300 bg-white font-black text-right"
           />
           <button

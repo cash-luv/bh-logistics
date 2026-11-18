@@ -33,3 +33,17 @@ export function todayKstStr(): string {
   const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
   return kst.toISOString().slice(0, 10);
 }
+
+// 1,000 단위 콤마 입력 서식화
+export function formatNumberWithCommas(value: any): string {
+  if (value === null || value === undefined || value === '') return '';
+  const clean = String(value).replace(/[^0-9]/g, '');
+  if (!clean) return '';
+  return Number(clean).toLocaleString('ko-KR');
+}
+
+// 콤마 제거 후 정수 변환
+export function parseNumberWithoutCommas(value: any): number {
+  if (value === null || value === undefined || value === '') return 0;
+  return Number(String(value).replace(/,/g, '')) || 0;
+}

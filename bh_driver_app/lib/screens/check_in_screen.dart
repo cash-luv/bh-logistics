@@ -9,6 +9,7 @@ import '../models/driver_home_info.dart';
 import '../services/draft_storage.dart';
 import '../services/firestore_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/formatters.dart';
 
 /// 출근 / 차량 점검 화면
 /// - 필수(2개): 1) 계기판 사진 1장, 2) 계기판 주행거리 숫자 입력 -> 이 2개만 채우면 바로 [출근 완료] 가능!
@@ -62,9 +63,13 @@ class _CheckInScreenState extends State<CheckInScreen> {
         DraftStorage.saveCheckInChecklist(item.key, 'ok');
       }
     }
-    _odometerController = TextEditingController(
-      text: DraftStorage.checkInOdometer,
-    );
+    final draftOdo = DraftStorage.checkInOdometer;
+    final initialText = draftOdo.isNotEmpty
+        ? formatComma(int.tryParse(draftOdo.replaceAll(',', '')))
+        : (widget.initialOdometerKm != null
+            ? formatComma(widget.initialOdometerKm)
+            : '');
+    _odometerController = TextEditingController(text: initialText);
     _recoverLostPhotoIfNeeded();
   }
 
@@ -554,7 +559,7 @@ class _OdometerInputCard extends StatelessWidget {
               controller: controller,
               onChanged: onChanged,
               keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              inputFormatters: [const ThousandsSeparatorInputFormatter()],
               style: const TextStyle(
                 fontSize: 28,
                 fontWeight: FontWeight.w800,
@@ -562,7 +567,7 @@ class _OdometerInputCard extends StatelessWidget {
               ),
               decoration: InputDecoration(
                 border: InputBorder.none,
-                hintText: hintKm != null ? '예: $hintKm' : '예: 182340',
+                hintText: hintKm != null ? '예: ${formatComma(hintKm)}' : '예: 182,340',
                 hintStyle: const TextStyle(
                   fontSize: 24,
                   color: AppColors.subText,

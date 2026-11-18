@@ -10,6 +10,7 @@ import '../models/driver_home_info.dart';
 import '../services/draft_storage.dart';
 import '../services/firestore_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/formatters.dart';
 
 /// 퇴근 / 빠른 보고 화면
 class CheckOutScreen extends StatefulWidget {
@@ -52,8 +53,12 @@ class _CheckOutScreenState extends State<CheckOutScreen> {
   void initState() {
     super.initState();
     DraftStorage.setActiveScreen('checkOut', startKm: widget.startOdometerKm);
+    final draftOdo = DraftStorage.checkOutOdometer;
+    final initialText = draftOdo.isNotEmpty
+        ? formatComma(int.tryParse(draftOdo.replaceAll(',', '')))
+        : '';
     _odometerController = TextEditingController(
-      text: DraftStorage.checkOutOdometer,
+      text: initialText,
     );
     _noteController = TextEditingController(
       text: DraftStorage.checkOutNote,
@@ -675,7 +680,7 @@ class _OdometerInputCard extends StatelessWidget {
               controller: controller,
               onChanged: onChanged,
               keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              inputFormatters: [const ThousandsSeparatorInputFormatter()],
               style: const TextStyle(
                 fontSize: 28,
                 fontWeight: FontWeight.w800,
@@ -683,7 +688,7 @@ class _OdometerInputCard extends StatelessWidget {
               ),
               decoration: InputDecoration(
                 border: InputBorder.none,
-                hintText: '예: ${startOdometerKm + 300}',
+                hintText: '예: ${formatComma(startOdometerKm + 300)}',
                 hintStyle: const TextStyle(
                   fontSize: 24,
                   color: AppColors.subText,
