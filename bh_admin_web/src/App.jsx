@@ -816,8 +816,8 @@ function DashboardView({
               30일 이내 검사 만료 차량이 없습니다.
             </div>
           ) : (
-            <div className="space-y-2.5">
-              {inspectionDueVehicles.map((v) => (
+            <FoldableList items={inspectionDueVehicles} limit={20}>
+              {(v) => (
                 <button
                   key={v.id}
                   onClick={() => onOpenVehicleDetail(v.id)}
@@ -841,8 +841,8 @@ function DashboardView({
                     {v.dDay < 0 ? `D+${Math.abs(v.dDay)} 초과` : `D-${v.dDay}`}
                   </span>
                 </button>
-              ))}
-            </div>
+              )}
+            </FoldableList>
           )}
         </div>
 
@@ -858,8 +858,8 @@ function DashboardView({
               오늘 출근한 기록이 아직 없습니다.
             </div>
           ) : (
-            <div className="space-y-2.5">
-              {todayLogs.map((l) => (
+            <FoldableList items={todayLogs} limit={20}>
+              {(l) => (
                 <div
                   key={l.id}
                   className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center justify-between gap-3"
@@ -890,8 +890,8 @@ function DashboardView({
                     {l.status === 'completed' ? '퇴근 완료' : '운행 중'}
                   </span>
                 </div>
-              ))}
-            </div>
+              )}
+            </FoldableList>
           )}
         </div>
 
@@ -907,8 +907,8 @@ function DashboardView({
               모든 활성 기사님이 출근했습니다!
             </div>
           ) : (
-            <div className="space-y-2.5">
-              {notCheckedInDrivers.map((d) => (
+            <FoldableList items={notCheckedInDrivers} limit={20}>
+              {(d) => (
                 <div
                   key={d.id}
                   className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/70 flex items-center justify-between gap-3"
@@ -925,11 +925,31 @@ function DashboardView({
                     출근 전
                   </span>
                 </div>
-              ))}
-            </div>
+              )}
+            </FoldableList>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* 목록이 길 때 limit개만 보여주고 [더보기 ▼] / [접기 ▲]로 펼치는 공용 컴포넌트 */
+function FoldableList({ items, limit = 20, children }) {
+  const [open, setOpen] = useState(false);
+  const shown = open ? items : items.slice(0, limit);
+  return (
+    <div className="space-y-2.5">
+      {shown.map((it) => children(it))}
+      {items.length > limit && (
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs"
+        >
+          {open ? '▲ 접기' : `▼ ${items.length - limit}개 더보기`}
+        </button>
+      )}
     </div>
   );
 }
