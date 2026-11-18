@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:ota_update/ota_update.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../theme/app_theme.dart';
@@ -15,8 +16,8 @@ import '../theme/app_theme.dart';
 class AppUpdateService {
   AppUpdateService._();
 
-  /// 현재 이 앱의 버전 (pubspec.yaml의 version: 1.0.4+5 와 동일하게 관리)
-  static const String currentVersion = '1.0.4';
+  /// 현재 이 앱의 버전 (실행 시 PackageInfo.fromPlatform()으로 pubspec.yaml 버전을 자동 로드)
+  static String currentVersion = '1.0.5';
 
   /// 기본 APK 다운로드 주소 (Firebase Hosting에 올린 bh-driver.apk)
   static const String defaultApkUrl =
@@ -29,6 +30,13 @@ class AppUpdateService {
     if (_dialogShowing) return;
 
     try {
+      try {
+        final info = await PackageInfo.fromPlatform();
+        if (info.version.trim().isNotEmpty) {
+          currentVersion = info.version.trim();
+        }
+      } catch (_) {}
+
       final doc = await FirebaseFirestore.instance
           .collection('Settings')
           .doc('appVersion')

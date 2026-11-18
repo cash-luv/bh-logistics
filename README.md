@@ -252,6 +252,10 @@ firebase deploy --only hosting
 ## 📅 개발 일지 (Daily Changelog)
 
 - **2026-11-18**:
+  - **구조 리팩토링 및 성능·용량 전면 최적화 (v1.0.5)**:
+    - **관리자 웹 모듈 분리 & 코드 스플리팅**: `4,885줄` 단일 `App.jsx`를 `400줄` 메인 셸 + `pages/`(8개 화면), `components/`(3개 공용 컴포넌트), `services/assignment.js`로 분리하고 `React.lazy` 지연 로딩 적용 (초기 진입 JS 청크 `127.48 kB` → `19.30 kB`, 약 85% 경량화 및 `excel` 938.57 kB 온디맨드 로딩)
+    - **레거시 정리 & Firestore 읽기 최적화**: 미사용 더미/일괄정리 코드(`seedService.js`, `masterDataService.js`) 삭제, 차량 주행거리 동기화 쿼리 최근 90일 범위로 제한, 기사앱 번호판 탐색 `where('plateNo', isEqualTo: ...)` 우선 조회 적용
+    - **기사앱 버전 단일화 & APK 경량화**: `package_info_plus`로 `pubspec.yaml` 버전을 자동 읽도록 통합하고, 실기기 ARM(`android-arm`, `android-arm64`) 전용 빌드로 APK 용량을 `54.2MB` → `35.7MB`로 약 34% 절감
   - **출·퇴근 시 차량 정보(누적 주행거리·운행상태·주차위치) 실시간 자동 업데이트 및 자가 복구 엔진 (기사앱 v1.0.4 & 관리자 콘솔)**:
     - 기사가 출근 시 계기판 주행거리를 입력하면 해당 차량(`Vehicles`)의 `status: driving` 및 `odometerKm`가 즉시 갱신
     - 퇴근 시 종료 주행거리를 입력하면 `status: idle`, 누적거리 `odometerKm`, 퇴근 주차위치(`parking`)가 원자적(`WriteBatch`)으로 동시 갱신

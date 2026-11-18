@@ -113,6 +113,16 @@ class FirestoreService {
     // 2) plateNo(번호판)로 검색 (공백 제거 정규화 비교)
     if (plateNo != null && plateNo.trim().isNotEmpty) {
       try {
+        // 번호판이 그대로 저장돼 있으면 쿼리 1건으로 바로 찾습니다. (전체 읽기 방지)
+        final exact = await _db
+            .collection('Vehicles')
+            .where('plateNo', isEqualTo: plateNo.trim())
+            .limit(1)
+            .get();
+        if (exact.docs.isNotEmpty) {
+          return (exact.docs.first.id, exact.docs.first.data());
+        }
+        // 공백이 달라 못 찾은 경우에만 전체를 훑어 공백 없이 비교합니다.
         final cleanPlate = plateNo.replaceAll(' ', '');
         final pQuery = await _db.collection('Vehicles').get();
         for (final doc in pQuery.docs) {
