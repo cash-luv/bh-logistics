@@ -15,8 +15,8 @@ import '../theme/app_theme.dart';
 class AppUpdateService {
   AppUpdateService._();
 
-  /// 현재 이 앱의 버전 (pubspec.yaml의 version: 1.0.1+2 와 동일하게 관리)
-  static const String currentVersion = '1.0.1';
+  /// 현재 이 앱의 버전 (pubspec.yaml의 version: 1.0.4+5 와 동일하게 관리)
+  static const String currentVersion = '1.0.4';
 
   /// 기본 APK 다운로드 주소 (Firebase Hosting에 올린 bh-driver.apk)
   static const String defaultApkUrl =
