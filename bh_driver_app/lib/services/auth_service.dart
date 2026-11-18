@@ -105,20 +105,55 @@ class AuthService {
 
     String? plateNo;
     String? vehicleModel;
-    if (session.assignedVehicleId != null &&
-        session.assignedVehicleId!.isNotEmpty) {
-      final vehDoc = await _db
-          .collection('Vehicles')
-          .doc(session.assignedVehicleId)
-          .get();
-      final veh = vehDoc.data();
-      if (veh != null) {
-        plateNo = veh['plateNo'] as String?;
-        final manufacturer = (veh['manufacturer'] as String?) ?? '';
-        final model = (veh['model'] as String?) ?? '';
-        final combined = '$manufacturer $model'.trim();
-        vehicleModel = combined.isEmpty ? null : combined;
-      }
+    String? assignedVehId = session.assignedVehicleId;
+    Map<String, dynamic>? veh;
+
+    if (assignedVehId != null && assignedVehId.isNotEmpty) {
+      try {
+        final vehDoc = await _db.collection('Vehicles').doc(assignedVehId).get();
+        if (vehDoc.exists) {
+          veh = vehDoc.data();
+        }
+      } catch (_) {}
+    }
+
+    // assignedVehicleId가 없거나 해당 문서가 없으면, Vehicles 컬렉션에서 기사 ID나 성함으로 자동 복구
+    if (veh == null) {
+      try {
+        final dQuery = await _db
+            .collection('Vehicles')
+            .where('assignedDriverId', isEqualTo: uid)
+            .limit(1)
+            .get();
+        if (dQuery.docs.isNotEmpty) {
+          assignedVehId = dQuery.docs.first.id;
+          veh = dQuery.docs.first.data();
+        } else {
+          final nQuery = await _db
+              .collection('Vehicles')
+              .where('assignedDriverName', isEqualTo: session.name)
+              .limit(1)
+              .get();
+          if (nQuery.docs.isNotEmpty) {
+            assignedVehId = nQuery.docs.first.id;
+            veh = nQuery.docs.first.data();
+          }
+        }
+        if (assignedVehId != null && assignedVehId.isNotEmpty) {
+          _db.collection('Users').doc(uid).set(
+            {'assignedVehicleId': assignedVehId},
+            SetOptions(merge: true),
+          );
+        }
+      } catch (_) {}
+    }
+
+    if (veh != null) {
+      plateNo = veh['plateNo'] as String?;
+      final manufacturer = (veh['manufacturer'] as String?) ?? '';
+      final model = (veh['model'] as String?) ?? '';
+      final combined = '$manufacturer $model'.trim();
+      vehicleModel = combined.isEmpty ? null : combined;
     }
 
     String? routeName;

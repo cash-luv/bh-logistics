@@ -92,6 +92,70 @@ class FirestoreService {
     );
   }
 
+  /// 기사 ID, 차량번호판(plateNo), 기사 성함을 기반으로 Vehicles 컬렉션의 실제 문서 ID와 데이터를 찾습니다.
+  static Future<(String vehicleId, Map<String, dynamic> vehicleData)?> findVehicle({
+    String? preferredVehicleId,
+    String? plateNo,
+    String? driverId,
+    String? driverName,
+  }) async {
+    // 1) preferredVehicleId가 유효한지 확인
+    if (preferredVehicleId != null && preferredVehicleId.trim().isNotEmpty) {
+      try {
+        final docSnap =
+            await _db.collection('Vehicles').doc(preferredVehicleId.trim()).get();
+        if (docSnap.exists) {
+          return (docSnap.id, docSnap.data() ?? {});
+        }
+      } catch (_) {}
+    }
+
+    // 2) plateNo(번호판)로 검색 (공백 제거 정규화 비교)
+    if (plateNo != null && plateNo.trim().isNotEmpty) {
+      try {
+        final cleanPlate = plateNo.replaceAll(' ', '');
+        final pQuery = await _db.collection('Vehicles').get();
+        for (final doc in pQuery.docs) {
+          final data = doc.data();
+          final docPlate = (data['plateNo'] as String? ?? '').replaceAll(' ', '');
+          if (docPlate.isNotEmpty && docPlate == cleanPlate) {
+            return (doc.id, data);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 3) assignedDriverId == driverId 로 검색
+    if (driverId != null && driverId.isNotEmpty) {
+      try {
+        final dQuery = await _db
+            .collection('Vehicles')
+            .where('assignedDriverId', isEqualTo: driverId)
+            .limit(1)
+            .get();
+        if (dQuery.docs.isNotEmpty) {
+          return (dQuery.docs.first.id, dQuery.docs.first.data());
+        }
+      } catch (_) {}
+    }
+
+    // 4) assignedDriverName == driverName 으로 검색
+    if (driverName != null && driverName.trim().isNotEmpty) {
+      try {
+        final nQuery = await _db
+            .collection('Vehicles')
+            .where('assignedDriverName', isEqualTo: driverName.trim())
+            .limit(1)
+            .get();
+        if (nQuery.docs.isNotEmpty) {
+          return (nQuery.docs.first.id, nQuery.docs.first.data());
+        }
+      } catch (_) {}
+    }
+
+    return null;
+  }
+
   /// 출근 점검 완료 시 저장 (WriteBatch)
   /// 관리자 분석용(기사님 화면엔 안 보임):
   /// - prevEndOdometerKm: 직전 퇴근 시 차량 계기판 km
@@ -123,7 +187,7 @@ class FirestoreService {
     final userData = userSnap.data() ?? {};
     final driverName =
         (userData['name'] as String?) ?? currentHomeInfo.driverName;
-    final vehicleId = (userData['assignedVehicleId'] as String?) ?? '';
+    final rawVehicleId = (userData['assignedVehicleId'] as String?) ?? '';
     final routeId = (userData['defaultRouteId'] as String?) ?? '';
 
     String plateNo = currentHomeInfo.plateNo ?? '';
@@ -132,9 +196,18 @@ class FirestoreService {
     bool hasRealPreviousCheckOut = false;
     double fuelEfficiencyKmPerL = 5.5; // 화물차 기본 연비(km/L), 차량 문서에 있으면 그 값 사용
 
-    if (vehicleId.isNotEmpty) {
-      final vehSnap = await _db.collection('Vehicles').doc(vehicleId).get();
-      final vehData = vehSnap.data() ?? {};
+    // 차량 매칭: preferredVehicleId -> plateNo -> assignedDriverId -> assignedDriverName 순서로 반드시 찾아냄
+    final resolvedVeh = await findVehicle(
+      preferredVehicleId: rawVehicleId,
+      plateNo: plateNo,
+      driverId: driverId,
+      driverName: driverName,
+    );
+
+    String vehicleId = rawVehicleId;
+    if (resolvedVeh != null) {
+      vehicleId = resolvedVeh.$1;
+      final vehData = resolvedVeh.$2;
       plateNo = (vehData['plateNo'] as String?) ?? plateNo;
       openMaintenanceCount =
           (vehData['openMaintenanceCount'] as num?)?.toInt() ?? 0;
@@ -145,6 +218,13 @@ class FirestoreService {
       final customEff = (vehData['fuelEfficiencyKmPerL'] as num?)?.toDouble();
       if (customEff != null && customEff > 0) {
         fuelEfficiencyKmPerL = customEff;
+      }
+      // Users 컬렉션에도 올바른 vehicleId를 동기화
+      if (rawVehicleId != vehicleId) {
+        _db.collection('Users').doc(driverId).set(
+          {'assignedVehicleId': vehicleId},
+          SetOptions(merge: true),
+        );
       }
     }
 
@@ -327,7 +407,7 @@ class FirestoreService {
 
     String driverName =
         (dailyData['driverName'] as String?) ?? currentHomeInfo.driverName;
-    String vehicleId = (dailyData['vehicleId'] as String?) ?? '';
+    String rawVehicleId = (dailyData['vehicleId'] as String?) ?? '';
     String plateNo =
         (dailyData['plateNo'] as String?) ?? (currentHomeInfo.plateNo ?? '');
     String routeId = (dailyData['routeId'] as String?) ?? '';
@@ -336,16 +416,35 @@ class FirestoreService {
         (dailyData['fuelEfficiencyKmPerL'] as num?)?.toDouble() ?? 5.5;
     final Timestamp? checkInTs = dailyData['checkInAt'] as Timestamp?;
 
-    if (vehicleId.isEmpty || routeId.isEmpty) {
+    if (rawVehicleId.isEmpty || routeId.isEmpty) {
       final userSnap = await _db.collection('Users').doc(driverId).get();
       final u = userSnap.data() ?? {};
-      if (vehicleId.isEmpty) {
-        vehicleId = (u['assignedVehicleId'] as String?) ?? '';
+      if (rawVehicleId.isEmpty) {
+        rawVehicleId = (u['assignedVehicleId'] as String?) ?? '';
       }
       if (routeId.isEmpty) {
         routeId = (u['defaultRouteId'] as String?) ?? '';
       }
       driverName = (u['name'] as String?) ?? driverName;
+    }
+
+    // 퇴근 시에도 차량 매칭: preferredVehicleId -> plateNo -> assignedDriverId -> assignedDriverName
+    final resolvedVeh = await findVehicle(
+      preferredVehicleId: rawVehicleId,
+      plateNo: plateNo,
+      driverId: driverId,
+      driverName: driverName,
+    );
+
+    String vehicleId = rawVehicleId;
+    int openMaintenanceCount = 0;
+    if (resolvedVeh != null) {
+      vehicleId = resolvedVeh.$1;
+      final v = resolvedVeh.$2;
+      if (plateNo.isEmpty) {
+        plateNo = (v['plateNo'] as String?) ?? '';
+      }
+      openMaintenanceCount = (v['openMaintenanceCount'] as num?)?.toInt() ?? 0;
     }
 
     int tolerancePct = 15;
@@ -361,16 +460,6 @@ class FirestoreService {
       if (customFuelPrice != null && customFuelPrice > 0) {
         dieselPricePerL = customFuelPrice;
       }
-    }
-
-    int openMaintenanceCount = 0;
-    if (vehicleId.isNotEmpty) {
-      final vehSnap = await _db.collection('Vehicles').doc(vehicleId).get();
-      final v = vehSnap.data() ?? {};
-      if (plateNo.isEmpty) {
-        plateNo = (v['plateNo'] as String?) ?? '';
-      }
-      openMaintenanceCount = (v['openMaintenanceCount'] as num?)?.toInt() ?? 0;
     }
 
     String dashboardStoragePath = '';

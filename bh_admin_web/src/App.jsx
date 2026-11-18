@@ -19,6 +19,7 @@ import {
   query,
   where,
   serverTimestamp,
+  onSnapshot,
 } from 'firebase/firestore';
 import { ref, getDownloadURL } from 'firebase/storage';
 import {
@@ -1102,6 +1103,33 @@ function DailyLogsView({ adminUid, presetDriverId, onClearPresetDriver }) {
       },
       { merge: true }
     );
+
+    // 차량(Vehicles) 정보도 퇴근 주행거리로 자동 갱신
+    try {
+      let targetVehId = selectedLog.vehicleId;
+      if (!targetVehId && selectedLog.plateNo) {
+        const vQuery = await getDocs(
+          query(
+            collection(db, 'Vehicles'),
+            where('plateNo', '==', selectedLog.plateNo)
+          )
+        );
+        if (!vQuery.empty) targetVehId = vQuery.docs[0].id;
+      }
+      if (targetVehId) {
+        await setDoc(
+          doc(db, 'Vehicles', targetVehId),
+          {
+            odometerKm: endKm,
+            status: 'idle',
+            odometerUpdatedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+    } catch (_) {}
+
     await loadLogs();
     setSelectedLog(null);
   };
@@ -2034,6 +2062,8 @@ function VehiclesView({ presetFilter, onSelectVehicle }) {
     setPage(1);
   }, [searchPlate, filterMode]);
 
+  const [syncingLogs, setSyncingLogs] = useState(false);
+
   const loadAll = async () => {
     const [vSnap, uSnap] = await Promise.all([
       getDocs(collection(db, 'Vehicles')),
@@ -2047,9 +2077,100 @@ function VehiclesView({ presetFilter, onSelectVehicle }) {
     );
   };
 
+  // 실시간 동기화: 기사들이 출근/퇴근 시 차량 상태와 주행거리가 화면에 즉시 자동 반영됨
   useEffect(() => {
     loadAll();
+    const unsub = onSnapshot(collection(db, 'Vehicles'), (vSnap) => {
+      setVehicles(vSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
   }, []);
+
+  // 기사들이 작성한 출·퇴근 운행일지(DailyLogs)를 전수 분석하여 각 차량의 주행거리를 최신값으로 일괄 동기화
+  const handleSyncVehiclesFromLogs = async () => {
+    if (
+      !window.confirm(
+        '기사들이 앱에서 작성한 출·퇴근 운행일지(DailyLogs)의 주행거리로 전체 차량의 누적 주행거리(odometerKm)를 일괄 최신화하시겠습니까?'
+      )
+    ) {
+      return;
+    }
+    setSyncingLogs(true);
+    try {
+      const [lSnap, vSnap] = await Promise.all([
+        getDocs(collection(db, 'DailyLogs')),
+        getDocs(collection(db, 'Vehicles')),
+      ]);
+
+      const vehList = vSnap.docs.map((d) => ({
+        id: d.id,
+        ref: d.ref,
+        ...d.data(),
+      }));
+      const vehByPlate = new Map();
+      const vehById = new Map();
+      vehList.forEach((v) => {
+        vehById.set(v.id, v);
+        const p = String(v.plateNo || '').replace(/\s+/g, '');
+        if (p) vehByPlate.set(p, v);
+      });
+
+      // DailyLogs에서 각 차량/번호판별 최고 주행거리 집계
+      const maxKmByVehId = new Map();
+      lSnap.docs.forEach((docSnap) => {
+        const l = docSnap.data();
+        const endKm = Number(l.endOdometerKm) || 0;
+        const startKm = Number(l.startOdometerKm) || 0;
+        const highestLogKm = Math.max(endKm, startKm);
+        if (highestLogKm <= 0) return;
+
+        let targetId = l.vehicleId;
+        if (!targetId || !vehById.has(targetId)) {
+          const p = String(l.plateNo || '').replace(/\s+/g, '');
+          if (p && vehByPlate.has(p)) {
+            targetId = vehByPlate.get(p).id;
+          }
+        }
+
+        if (targetId) {
+          const prev = maxKmByVehId.get(targetId) || 0;
+          if (highestLogKm > prev) {
+            maxKmByVehId.set(targetId, highestLogKm);
+          }
+        }
+      });
+
+      let updatedCount = 0;
+      const batch = writeBatch(db);
+      for (const [vehId, newKm] of maxKmByVehId.entries()) {
+        const v = vehById.get(vehId);
+        const currentKm = Number(v?.odometerKm) || 0;
+        if (newKm > currentKm) {
+          batch.set(
+            doc(db, 'Vehicles', vehId),
+            {
+              odometerKm: newKm,
+              odometerUpdatedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+          updatedCount++;
+        }
+      }
+
+      if (updatedCount > 0) {
+        await batch.commit();
+        alert(`총 ${updatedCount}대의 차량 주행거리가 최근 운행기록으로 최신화되었습니다!`);
+      } else {
+        alert('모든 차량의 주행거리가 이미 운행일지와 동일하게 최신 상태입니다.');
+      }
+    } catch (err) {
+      alert('동기화 실패: ' + err.message);
+    } finally {
+      setSyncingLogs(false);
+    }
+  };
 
   const openCreateVehicleModal = () => {
     setEditingVehicleId(null);
@@ -2190,6 +2311,21 @@ function VehiclesView({ presetFilter, onSelectVehicle }) {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => loadAll()}
+            className="px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-sm whitespace-nowrap flex items-center gap-1.5"
+            title="차량 목록 새로고침"
+          >
+            <span>🔄 새로고침</span>
+          </button>
+          <button
+            onClick={handleSyncVehiclesFromLogs}
+            disabled={syncingLogs}
+            className="px-4 py-2.5 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 font-black rounded-xl text-sm whitespace-nowrap flex items-center gap-1.5 shadow-sm"
+            title="기사들이 작성한 출·퇴근 운행일지(DailyLogs)의 최고 주행거리로 전체 차량의 주행거리를 즉시 맞춥니다"
+          >
+            <span>{syncingLogs ? '⏳ 동기화 중...' : '⚡ 운행일지 주행거리로 일괄 최신화'}</span>
+          </button>
           <button
             onClick={async () => {
               if (
@@ -3248,7 +3384,7 @@ function DriversView() {
   const [msg, setMsg] = useState('');
 
   // 기사앱 버전 배포 알림 설정 상태 (Settings/appVersion)
-  const [latestAppVersion, setLatestAppVersion] = useState('1.0.3');
+  const [latestAppVersion, setLatestAppVersion] = useState('1.0.4');
   const [apkUrl, setApkUrl] = useState(
     'https://bh-logistics-f45d8.web.app/bh-driver.apk'
   );
