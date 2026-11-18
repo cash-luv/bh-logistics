@@ -1,0 +1,113 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.role == 'admin' ||
+        request.auth.token.email == 'admin@bhlogistics.local' ||
+        (
+          exists(/databases/$(database)/documents/Users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/Users/$(request.auth.uid)).data.role == 'admin'
+        )
+      );
+    }
+
+    match /Users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
+      allow delete: if isAdmin();
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        request.auth.uid == userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mustChangePassword', 'fcmToken', 'updatedAt'])
+      );
+    }
+
+    match /Vehicles/{vehicleId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'odometerKm',
+          'odometerUpdatedAt',
+          'status',
+          'parking',
+          'openMaintenanceCount',
+          'updatedAt'
+        ])
+      );
+    }
+
+    match /Routes/{routeId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'expectedKm',
+          'lastActualKm',
+          'updatedAt'
+        ])
+      );
+    }
+
+    match /DailyLogs/{logId} {
+      allow read: if isAdmin() || (
+        isSignedIn() &&
+        (
+          !exists(/databases/$(database)/documents/DailyLogs/$(logId)) ||
+          resource.data.driverId == request.auth.uid
+        )
+      );
+
+      allow create: if isAdmin() || (
+        isSignedIn() &&
+        request.resource.data.driverId == request.auth.uid &&
+        logId == request.resource.data.workDate + '_' + request.auth.uid &&
+        (
+          request.resource.data.routeId == '' ||
+          request.resource.data.routePrice ==
+            get(/databases/$(database)/documents/Routes/$(request.resource.data.routeId)).data.price
+        )
+      );
+
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        resource.data.driverId == request.auth.uid &&
+        request.resource.data.driverId == request.auth.uid &&
+        request.resource.data.workDate == resource.data.workDate &&
+        request.resource.data.routePrice == resource.data.routePrice
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    match /Maintenance/{maintId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin() || (
+        isSignedIn() &&
+        request.resource.data.reportedBy == request.auth.uid
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    match /Settlements/{settlementId} {
+      allow read: if isAdmin() || (
+        isSignedIn() && resource.data.driverId == request.auth.uid
+      );
+      allow write: if isAdmin();
+    }
+
+    // 7. Settings 컬렉션: 앱 최신 버전(appVersion) 및 경유값(fuel) 설정. 모든 로그인 사용자가 읽을 수 있고 관리자가 수정
+    match /Settings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}

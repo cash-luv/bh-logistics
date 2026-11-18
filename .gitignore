@@ -1,0 +1,59 @@
+# ==============================================================================
+# BH Logistics Monorepo - Git Ignore Rules
+# ==============================================================================
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Secrets, API Keys & Credentials (절대 커밋 금지)
+*.env
+*.env.local
+*.env.production
+!.env.example
+*.pem
+*.key
+*.jks
+*.keystore
+key.properties
+google-services.json
+GoogleService-Info.plist
+firebase_options.dart
+firebase-debug.log*
+firebase-adminsdk*.json
+
+# Flutter & Dart dependencies & build outputs
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/.pub/
+**/coverage/
+*.symbols
+*.map.json
+.widget_preview/
+
+# Web & Node dependencies & build outputs
+**/node_modules/
+**/dist/
+.firebase/
+*.apk
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE & Editor files
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.history/
+*.swp
+*.bak
