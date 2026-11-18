@@ -17,13 +17,18 @@ class AppUpdateService {
   AppUpdateService._();
 
   /// 현재 이 앱의 버전 (실행 시 PackageInfo.fromPlatform()으로 pubspec.yaml 버전을 자동 로드)
-  static String currentVersion = '1.0.5';
+  static String currentVersion = '1.0.6';
 
   /// 기본 APK 다운로드 주소 (Firebase Hosting에 올린 bh-driver.apk)
   static const String defaultApkUrl =
       'https://bh-logistics-f45d8.web.app/bh-driver.apk';
 
   static bool _dialogShowing = false;
+
+  /// 'v1.0.6+7 ' 같은 문자열에서 앞의 'v'와 뒤의 '+빌드번호'를 제거합니다.
+  static String _cleanVersion(String raw) {
+    return raw.trim().replaceFirst(RegExp(r'^[vV]'), '').split('+').first.trim();
+  }
 
   /// 앱 시작 및 앱 복귀 시 호출합니다. 새 버전이 있으면 안내 창을 띄웁니다.
   static Future<void> checkAndPromptUpdate(BuildContext context) async {
@@ -32,8 +37,9 @@ class AppUpdateService {
     try {
       try {
         final info = await PackageInfo.fromPlatform();
-        if (info.version.trim().isNotEmpty) {
-          currentVersion = info.version.trim();
+        final cleaned = _cleanVersion(info.version);
+        if (cleaned.isNotEmpty) {
+          currentVersion = cleaned;
         }
       } catch (_) {}
 
@@ -45,14 +51,16 @@ class AppUpdateService {
       if (!doc.exists) return;
       final data = doc.data() ?? {};
 
-      final latestVersion =
-          (data['latestVersion'] as String?)?.trim() ?? currentVersion;
+      final rawLatest = (data['latestVersion'] as String?) ?? currentVersion;
+      final latestVersion = _cleanVersion(rawLatest).isNotEmpty
+          ? _cleanVersion(rawLatest)
+          : currentVersion;
       final rawUrl = (data['apkUrl'] as String?)?.trim() ?? '';
       final baseUrl = rawUrl.isNotEmpty ? rawUrl : defaultApkUrl;
-      // 캐시된 예전 파일이 내려오지 않도록 버전을 주소 뒤에 붙입니다.
-      final apkUrl = baseUrl.contains('?')
-          ? baseUrl
-          : '$baseUrl?v=${Uri.encodeComponent(latestVersion)}';
+      // CDN·브라우저에 캐시된 예전 APK가 내려오지 않도록 버전과 타임스탬프를 함께 붙입니다.
+      final sep = baseUrl.contains('?') ? '&' : '?';
+      final apkUrl =
+          '$baseUrl${sep}v=${Uri.encodeComponent(latestVersion)}&t=${DateTime.now().millisecondsSinceEpoch}';
       final message = (data['message'] as String?)?.trim() ??
           '더 편리해진 새 버전이 나왔어요.\n아래 버튼을 눌러 업데이트해 주세요.';
       final forceUpdate = (data['forceUpdate'] as bool?) ?? false;
@@ -83,10 +91,14 @@ class AppUpdateService {
 
   /// "1.0.1" > "1.0.0" 비교
   static bool _isNewerVersion(String latest, String current) {
-    final lParts =
-        latest.split('.').map((e) => int.tryParse(e.trim()) ?? 0).toList();
-    final cParts =
-        current.split('.').map((e) => int.tryParse(e.trim()) ?? 0).toList();
+    final lParts = _cleanVersion(latest)
+        .split('.')
+        .map((e) => int.tryParse(e.trim()) ?? 0)
+        .toList();
+    final cParts = _cleanVersion(current)
+        .split('.')
+        .map((e) => int.tryParse(e.trim()) ?? 0)
+        .toList();
     final len = lParts.length > cParts.length ? lParts.length : cParts.length;
 
     for (var i = 0; i < len; i++) {
@@ -150,8 +162,10 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     });
 
     try {
+      final safeVer =
+          widget.latestVersion.replaceAll(RegExp(r'[^0-9A-Za-z._-]'), '_');
       _sub = OtaUpdate()
-          .execute(widget.apkUrl, destinationFilename: 'bh-driver.apk')
+          .execute(widget.apkUrl, destinationFilename: 'bh-driver-$safeVer.apk')
           .listen(
         (event) {
           if (!mounted) return;
