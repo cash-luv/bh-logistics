@@ -29,32 +29,51 @@
 ## 🏗️ 2. 시스템 아키텍처 (System Architecture)
 
 ```mermaid
-flowchart TB
-    subgraph Drivers["🚚 현장 기사님 (bh_driver_app)"]
-        A1["특대형 20pt+ 고시인성 UI"]
-        A2["원클릭 출퇴근 & 8종 일일 차량점검"]
-        A3["백그라운드 포어그라운드 GPS 트래킹"]
-        A4["주유 영수증 촬영 & 인앱 OTA 자동업데이트"]
+flowchart LR
+    classDef client fill:#EBF4FF,stroke:#3B82F6,stroke-width:2px,color:#1E3A8A;
+    classDef cloud fill:#FEF3C7,stroke:#F59E0B,stroke-width:2px,color:#78350F;
+    classDef admin fill:#F0FDF4,stroke:#10B981,stroke-width:2px,color:#064E3B;
+
+    subgraph Mobile ["📱 기사용 모바일 앱 (Flutter)"]
+        direction TB
+        M1["출퇴근 & 8종 차량점검"]:::client
+        M2["백그라운드 GPS 동선 트래킹"]:::client
+        M3["주유비 영수증 즉시 촬영"]:::client
+        M4["OTA 원격 앱 자동 업데이트"]:::client
     end
 
-    subgraph Firebase["☁️ Firebase Serverless Cloud (서울 asia-northeast3)"]
-        F1[("Firestore\n(DailyLogs, Vehicles, Users, Routes)")]
-        F2[("Cloud Storage\n(계기판/차량점검/주유영수증 사진)")]
-        F3["Firebase Auth\n(기사 코드 / 관리자 보안 로그인)")]
-        F4["Firebase Hosting\n(웹 콘솔 및 최신 APK 배포)"]
+    subgraph Cloud ["☁️ Firebase Serverless Cloud (서울)"]
+        direction TB
+        Auth["Firebase Auth<br/>(기사코드 / 관리자 인증)"]:::cloud
+        DB[("Cloud Firestore<br/>• DailyLogs (운행 원장)<br/>• Vehicles (차량 대장)<br/>• Users (기사 프로필)<br/>• Routes (15개 노선)")]:::cloud
+        Storage[("Cloud Storage<br/>(계기판 / 점검 / 영수증 사진)")]:::cloud
+        Hosting["Firebase Hosting<br/>(웹 배포 & 최신 APK 제공)"]:::cloud
     end
 
-    subgraph Admin["🖥️ 본사 관리자 (bh_admin_web)"]
-        B1["실시간 종합 KPI 대시보드 (Recharts)"]
-        B2["기사별 실시간 출근표 & 주간/당일 휴무 스케줄러"]
-        B3["차량 엑셀 일괄 등록 & 22종 상세 스펙 대장"]
-        B4["15개 사업소 표준 노선 관리 & 자동 거리/단가 매칭"]
-        B5["월말 운행 마감 & ExcelJS 자동 정산서 출력"]
+    subgraph Admin ["🖥️ 본사 관리자 웹 콘솔 (React)"]
+        direction TB
+        W1["종합 KPI 대시보드 (Recharts)"]:::admin
+        W2["기사별 실시간 출근표 & 휴무 스케줄러"]:::admin
+        W3["차량 대장 (22개 스펙 & 엑셀 연동)"]:::admin
+        W4["15개 표준 노선 & 자동 단가 정산"]:::admin
+        W5["ExcelJS 월간 정산서 원클릭 출력"]:::admin
     end
 
-    Drivers <-->|"양방향 실시간 동기화 (SDK)"| Firebase
-    Admin <-->|"양방향 실시간 관제 및 배차"| Firebase
+    Mobile -->|"출퇴근/운행일지/GPS 동선"| DB
+    Mobile -->|"점검/영수증 사진 업로드"| Storage
+    Mobile <-->|"기사 로그인 & 버전 체크"| Auth
+
+    Admin <-->|"실시간 관제 & 배차/휴무 변경"| DB
+    Admin -->|"점검 사진 / 영수증 열람"| Storage
+    Admin <-->|"관리자 보안 로그인"| Auth
+    Hosting -->|"웹 콘솔 서빙"| Admin
+    Hosting -.->|"OTA 앱 자동 업데이트"| Mobile
 ```
+
+> **아키텍처 설계 포인트**
+> 1. **Client (Flutter)**: 시니어 기사용 특대형 UI, 포어그라운드 백그라운드 GPS 트래킹, 인앱 OTA 자동 배포
+> 2. **Backend (Firebase)**: 서울 리전(`asia-northeast3`) 기반 초저지연 Firestore, Storage 사진 버킷, 세분화된 보안 규칙(RBAC)
+> 3. **Backoffice (React)**: 실시간 KPI 대시보드, 기사별 실시간 출근표 및 휴무 스케줄러, 15개 사업소 노선 매칭 및 엑셀 정산서 자동 출력
 
 ---
 
