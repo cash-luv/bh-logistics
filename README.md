@@ -249,6 +249,19 @@ firebase deploy --only hosting
 
 ---
 
+## 📅 개발 일지 (Daily Changelog)
+
+- **2026-11-18**:
+  - **백그라운드 GPS 동선 트래커 전면 고도화**:
+    - 장거리 화물 운송(세종↔청주↔용인↔대전)에 최적화된 **5분 주기 시간 기반 체크포인트 기록** 도입
+    - 기존 40개 지점 제한 해제 및 **최대 300개 지점(24시간+ 풀타임 커버)**으로 대폭 확대
+    - 물류센터(쿠팡 등) **상하차 대기 시간('정차 / 대기')**과 고속도로 주행('운행 중') 자동 판별 기록
+    - 안드로이드 배터리 절전 킬 방지(`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, Foreground Service + WakeLock)
+  - **본사 관리자 콘솔 신규 기능**: 기사별 실시간 출근표 및 주간/당일 휴무 스케줄러(`AttendanceView`) 구축
+  - **시스템 아키텍처 다이어그램**: GitHub 렌더링 최적화 및 가로형(`flowchart LR`) 디자인 전면 개선
+
+---
+
 ## 👤 개발자 (Author)
 - **1인 풀스택 개발 (Full-Stack Solo Developer)**
 - **GitHub**: [https://github.com/cash-luv](https://github.com/cash-luv)

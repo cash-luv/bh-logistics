@@ -5,10 +5,11 @@ import 'dart:io';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// [관리자 전용 백그라운드 분석기 & 이동 타임라인 기록기]
-/// 기사님 화면에는 전혀 보이지 않으며, 운행 중에는 서버(Firebase)에 전송하지 않고
-/// 휴대폰 내부에만 누적 거리와 주요 이동 타임라인(시각, 시·구·동 주소, 누적km)을 기록해 두었다가
-/// 퇴근 버튼을 누를 때 딱 한 번 DailyLogs에 함께 저장합니다. (서버 추가 비용 0원)
+/// [BH로지스틱스 기사앱 백그라운드 GPS 트래커 & 5분 주기 이동 타임라인 기록기]
+/// - 기사님 화면에는 전혀 부담을 주지 않으며, 전경 서비스(Foreground Service)로 실행되어 화면이 꺼져도 계속 동작합니다.
+/// - 5분마다 또는 고속도로 5km 이동 시마다 현재 위치(시·구·동)와 누적 거리를 휴대폰 내부에 저장합니다.
+/// - 상하차 대기(쿠팡 등) 시에는 '정차/대기'로, 주행 중에는 '운행 중'으로 구분 기록하여 근무 시간을 완벽히 증명합니다.
+/// - 퇴근 버튼을 누를 때 최종 누적 거리(km)와 전체 타임라인 배열을 DailyLogs에 1회 저장합니다. (서버 비용 최적화)
 class GpsTrackerService {
   GpsTrackerService._();
 
@@ -16,14 +17,21 @@ class GpsTrackerService {
   static const _kLastLat = 'gps_tracker_last_lat';
   static const _kLastLng = 'gps_tracker_last_lng';
   static const _kTrackingDate = 'gps_tracker_date';
-  static const _kTimelineList = 'gps_tracker_timeline_v1';
+  static const _kTimelineList = 'gps_tracker_timeline_v2';
+  static const _kLastCheckpointMeters = 'gps_tracker_last_chk_meters';
+
+  // 5분 주기 기록 & 최대 300개 지점 (하루 24시간 이상 연속 운행 완벽 커버)
+  static const int _kCheckpointIntervalMinutes = 5;
+  static const int _kMaxTimelinePoints = 300;
 
   static StreamSubscription<Position>? _sub;
+  static Timer? _periodicTimer;
   static double _accumulatedMeters = 0.0;
   static double? _lastLat;
   static double? _lastLng;
-  static double _metersSinceLastTimelinePoint = 0.0;
+  static double _lastCheckpointMeters = 0.0;
   static List<Map<String, dynamic>> _timeline = [];
+  static bool _isRecordingCheckpoint = false;
 
   /// 현재 누적된 GPS 주행거리 (km 정수)
   static int get gpsDrivenKm => (_accumulatedMeters / 1000.0).round();
@@ -35,7 +43,7 @@ class GpsTrackerService {
     return '$hh:$mm';
   }
 
-  /// 출근 완료 시 또는 앱 재시작(운행 중 상태) 시 조용히 추적을 시작합니다.
+  /// 출근 완료 시 또는 앱 재실행(운행 중 복원) 시 5분 주기 백그라운드 추적을 시작합니다.
   static Future<void> startTrackingForToday(
     String workDate, {
     double? initialLat,
@@ -48,6 +56,7 @@ class GpsTrackerService {
 
     if (!reset && savedDate == workDate) {
       _accumulatedMeters = prefs.getDouble(_kAccumMeters) ?? 0.0;
+      _lastCheckpointMeters = prefs.getDouble(_kLastCheckpointMeters) ?? _accumulatedMeters;
       _lastLat = prefs.getDouble(_kLastLat);
       _lastLng = prefs.getDouble(_kLastLng);
       final rawTimeline = prefs.getString(_kTimelineList);
@@ -64,26 +73,33 @@ class GpsTrackerService {
     } else {
       await _sub?.cancel();
       _sub = null;
+      _periodicTimer?.cancel();
+      _periodicTimer = null;
+
       _accumulatedMeters = 0.0;
-      _metersSinceLastTimelinePoint = 0.0;
+      _lastCheckpointMeters = 0.0;
       _lastLat = initialLat;
       _lastLng = initialLng;
       _timeline = [];
+
       if (initialLat != null && initialLng != null) {
         _timeline.add({
           'time': _nowKstHm(),
           'type': '출근 출발',
           'address': (initialAddress ?? '').isNotEmpty
               ? initialAddress
-              : '출발 위치',
+              : '출근 출발 위치',
           'lat': initialLat,
           'lng': initialLng,
           'cumKm': 0,
         });
       }
+
       await prefs.setString(_kTrackingDate, workDate);
       await prefs.setDouble(_kAccumMeters, 0.0);
+      await prefs.setDouble(_kLastCheckpointMeters, 0.0);
       await prefs.setString(_kTimelineList, jsonEncode(_timeline));
+
       if (initialLat != null && initialLng != null) {
         await prefs.setDouble(_kLastLat, initialLat);
         await prefs.setDouble(_kLastLng, initialLng);
@@ -93,7 +109,8 @@ class GpsTrackerService {
       }
     }
 
-    if (_sub != null) return;
+    // 이미 리스너와 타이머가 돌고 있다면 중복 실행 방지
+    if (_sub != null && _periodicTimer != null) return;
 
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -108,17 +125,17 @@ class GpsTrackerService {
         return;
       }
 
-      // 안드로이드: 상단 알림이 있는 '전경 서비스'로 실행되어 화면이 꺼지거나 다른 앱을 써도 계속 기록됩니다.
-      // 아이폰: 백그라운드 위치 업데이트를 허용합니다.
+      // 안드로이드: 상단 알림 전경 서비스(Foreground Service) + WakeLock으로 화면이 꺼져도 멈추지 않음
+      // 아이폰: 백그라운드 위치 업데이트 허용
       final LocationSettings locationSettings;
       if (Platform.isAndroid) {
         locationSettings = AndroidSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 100,
-          intervalDuration: const Duration(seconds: 15),
+          distanceFilter: 30, // 30m 이동 시 GPS 업데이트
+          intervalDuration: const Duration(seconds: 20),
           foregroundNotificationConfig: const ForegroundNotificationConfig(
-            notificationTitle: 'BH 기사앱 운행 기록 중',
-            notificationText: '퇴근 버튼을 누르면 위치 기록이 끝납니다.',
+            notificationTitle: 'BH 기사앱 운행 중 (5분 주기 동선 기록)',
+            notificationText: '정밀한 이동 거리와 물류 타임라인을 안전하게 기록하고 있습니다.',
             enableWakeLock: true,
             setOngoing: true,
           ),
@@ -126,7 +143,7 @@ class GpsTrackerService {
       } else if (Platform.isIOS) {
         locationSettings = AppleSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 100,
+          distanceFilter: 30,
           activityType: ActivityType.automotiveNavigation,
           pauseLocationUpdatesAutomatically: false,
           showBackgroundLocationIndicator: true,
@@ -135,10 +152,12 @@ class GpsTrackerService {
       } else {
         locationSettings = const LocationSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 100,
+          distanceFilter: 30,
         );
       }
 
+      // 1. 실시간 GPS 스트림 수신 (거리 누적 및 고속도로 장거리 이동 감지)
+      _sub?.cancel();
       _sub = Geolocator.getPositionStream(
         locationSettings: locationSettings,
       ).listen((Position pos) async {
@@ -151,57 +170,109 @@ class GpsTrackerService {
             pos.latitude,
             pos.longitude,
           );
-          if (deltaMeters >= 50 && deltaMeters <= 50000) {
+          // 정상 주행 범위 (30m 이상 ~ 50km 이하 단일 점프)
+          if (deltaMeters >= 30 && deltaMeters <= 50000) {
             _accumulatedMeters += deltaMeters;
-            _metersSinceLastTimelinePoint += deltaMeters;
             await prefs.setDouble(_kAccumMeters, _accumulatedMeters);
 
-            // 초반 12개 지점은 300m마다(단거리 실차 테스트에서도 경로가 촘촘히 찍히도록),
-            // 이후 장거리 운행 시에는 2km마다 최대 40개까지 타임라인 경유 지점을 자동 기록합니다.
-            final double stepThreshold = _timeline.length < 12 ? 300.0 : 2000.0;
-            if (_metersSinceLastTimelinePoint >= stepThreshold &&
-                _timeline.length < 40) {
-              _metersSinceLastTimelinePoint = 0.0;
-              final addr = await resolveKoreanAddress(
-                latitude: pos.latitude,
-                longitude: pos.longitude,
+            // 고속도로 등에서 5분이 되기 전에 5km 이상 주행한 경우 즉시 체크포인트 기록
+            if (_accumulatedMeters - _lastCheckpointMeters >= 5000) {
+              await _recordCheckpoint(
+                lat: pos.latitude,
+                lng: pos.longitude,
+                reason: '고속 이동',
               );
-              final cumKmVal = _accumulatedMeters >= 100
-                  ? (_accumulatedMeters / 1000.0).round().clamp(1, 99999)
-                  : 0;
-              _timeline.add({
-                'time': _nowKstHm(),
-                'type': '운행 경유',
-                'address': addr.isNotEmpty ? addr : '이동 중',
-                'lat': pos.latitude,
-                'lng': pos.longitude,
-                'cumKm': cumKmVal,
-              });
-              await prefs.setString(_kTimelineList, jsonEncode(_timeline));
             }
           }
-        } else if (_timeline.isEmpty) {
-          final addr = await resolveKoreanAddress(
-            latitude: pos.latitude,
-            longitude: pos.longitude,
-          );
-          _timeline.add({
-            'time': _nowKstHm(),
-            'type': '출근 출발',
-            'address': addr.isNotEmpty ? addr : '출발 위치',
-            'lat': pos.latitude,
-            'lng': pos.longitude,
-            'cumKm': 0,
-          });
-          await prefs.setString(_kTimelineList, jsonEncode(_timeline));
         }
 
         _lastLat = pos.latitude;
         _lastLng = pos.longitude;
         await prefs.setDouble(_kLastLat, pos.latitude);
         await prefs.setDouble(_kLastLng, pos.longitude);
-      });
+      }, onError: (_) {});
+
+      // 2. 5분 주기 타이머: 정차/대기(쿠팡 등) 및 일반 주행 상태를 5분마다 꼬박꼬박 기록
+      _periodicTimer?.cancel();
+      _periodicTimer = Timer.periodic(
+        const Duration(minutes: _kCheckpointIntervalMinutes),
+        (_) => _recordCheckpoint(reason: '5분 주기'),
+      );
     } catch (_) {}
+  }
+
+  /// 5분 주기 또는 고속 주행 시 타임라인에 한 줄을 안전하게 기록합니다.
+  static Future<void> _recordCheckpoint({
+    double? lat,
+    double? lng,
+    String reason = '5분 주기',
+  }) async {
+    if (_isRecordingCheckpoint) return;
+    if (_timeline.length >= _kMaxTimelinePoints) return;
+    _isRecordingCheckpoint = true;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      double? curLat = lat ?? _lastLat;
+      double? curLng = lng ?? _lastLng;
+
+      // 만약 최근 좌표가 없으면 조용히 1회 수신 시도
+      if (curLat == null || curLng == null) {
+        final pos = await tryGetSilentCurrentPosition();
+        if (pos != null) {
+          curLat = pos.latitude;
+          curLng = pos.longitude;
+          _lastLat = curLat;
+          _lastLng = curLng;
+        }
+      }
+
+      if (curLat == null || curLng == null) return;
+
+      final deltaMeters = _accumulatedMeters - _lastCheckpointMeters;
+      final int cumKmVal = _accumulatedMeters >= 100
+          ? (_accumulatedMeters / 1000.0).round().clamp(1, 99999)
+          : 0;
+
+      // 직전 기록 대비 이동 거리가 150m 미만이면 '정차 / 대기', 150m 이상이면 '운행 중'으로 표시
+      final bool isStationary = deltaMeters < 150;
+      final String type = isStationary ? '정차 / 대기' : '운행 중';
+
+      // 주소 변환 (실패해도 안전하게 좌표 또는 기본명 사용)
+      final addr = await resolveKoreanAddress(
+        latitude: curLat,
+        longitude: curLng,
+      );
+
+      final String finalAddress = addr.isNotEmpty
+          ? addr
+          : (isStationary ? '정차 및 대기 위치' : '운행 중 위치');
+
+      // 중복 체크: 직전 지점과 시각(분)이 같으면 덮어쓰거나 건너뜀
+      final currentHm = _nowKstHm();
+      if (_timeline.isNotEmpty &&
+          _timeline.last['time'] == currentHm &&
+          _timeline.last['type'] == type) {
+        return;
+      }
+
+      _timeline.add({
+        'time': currentHm,
+        'type': type,
+        'address': finalAddress,
+        'lat': curLat,
+        'lng': curLng,
+        'cumKm': cumKmVal,
+      });
+
+      _lastCheckpointMeters = _accumulatedMeters;
+      await prefs.setDouble(_kLastCheckpointMeters, _lastCheckpointMeters);
+      await prefs.setString(_kTimelineList, jsonEncode(_timeline));
+    } catch (_) {
+    } finally {
+      _isRecordingCheckpoint = false;
+    }
   }
 
   /// 출근 시점 현재 GPS 위치를 조용히 1회 가져옵니다.
@@ -296,17 +367,19 @@ class GpsTrackerService {
     double? endLng,
     String? endAddress,
   }) async {
+    _periodicTimer?.cancel();
+    _periodicTimer = null;
     await _sub?.cancel();
     _sub = null;
 
     final prefs = await SharedPreferences.getInstance();
 
-    // 앱이 백그라운드에서 재시작된 직후 퇴근을 누른 경우에도 저장된 누적값과 타임라인을 복원합니다.
     if (_accumulatedMeters == 0.0) {
       _accumulatedMeters = prefs.getDouble(_kAccumMeters) ?? 0.0;
     }
     _lastLat ??= prefs.getDouble(_kLastLat);
     _lastLng ??= prefs.getDouble(_kLastLng);
+
     if (_timeline.isEmpty) {
       final rawTimeline = prefs.getString(_kTimelineList);
       if (rawTimeline != null && rawTimeline.isNotEmpty) {
@@ -356,7 +429,7 @@ class GpsTrackerService {
 
     final finalTimeline = List<Map<String, dynamic>>.from(_timeline);
 
-    // 만약 출근 출발 지점이 타임라인에 빠져 있다면 DailyLogs의 출근 위치로 보강합니다.
+    // 만약 출근 출발 지점이 타임라인에 빠져 있다면 DailyLogs의 출근 위치로 보강
     if (finalTimeline.isEmpty && startLat != null && startLng != null) {
       finalTimeline.add({
         'time': (startTimeHm ?? '').isNotEmpty ? startTimeHm : _nowKstHm(),
@@ -369,6 +442,7 @@ class GpsTrackerService {
       });
     }
 
+    // 퇴근 도착 지점 추가
     if (endLat != null && endLng != null) {
       finalTimeline.add({
         'time': _nowKstHm(),
@@ -382,12 +456,13 @@ class GpsTrackerService {
     }
 
     _accumulatedMeters = 0.0;
-    _metersSinceLastTimelinePoint = 0.0;
+    _lastCheckpointMeters = 0.0;
     _lastLat = null;
     _lastLng = null;
     _timeline = [];
 
     await prefs.remove(_kAccumMeters);
+    await prefs.remove(_kLastCheckpointMeters);
     await prefs.remove(_kLastLat);
     await prefs.remove(_kLastLng);
     await prefs.remove(_kTrackingDate);
