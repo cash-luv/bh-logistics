@@ -973,6 +973,7 @@ function DailyLogsView({ adminUid, presetDriverId, onClearPresetDriver }) {
   const [onlyKmWarn, setOnlyKmWarn] = useState(false);
   const [onlyMissingCheckout, setOnlyMissingCheckout] = useState(false);
 
+  const [showAllGps, setShowAllGps] = useState(false);
   const [selectedLog, setSelectedLog] = useState(null);
   const [photoUrls, setPhotoUrls] = useState({});
   const [locationModal, setLocationModal] = useState(null);
@@ -980,6 +981,10 @@ function DailyLogsView({ adminUid, presetDriverId, onClearPresetDriver }) {
   // 보정용 입력 상태
   const [fixEndKm, setFixEndKm] = useState('');
   const [voidReason, setVoidReason] = useState('');
+
+  useEffect(() => {
+    setShowAllGps(false);
+  }, [selectedLog?.id]);
 
   useEffect(() => {
     if (presetDriverId) {
@@ -1571,47 +1576,70 @@ function DailyLogsView({ adminUid, presetDriverId, onClearPresetDriver }) {
                       </div>
                     )}
                     <div className="relative pl-4 border-l-2 border-indigo-300 space-y-2.5 text-xs">
-                      {points.map((pt, idx) => (
-                      <div
-                        key={idx}
-                        className="bg-white p-2.5 rounded-xl border border-indigo-100 flex items-center justify-between gap-2"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-black whitespace-nowrap">
-                              {pt.time || '-'} · {pt.type || '이동'}
-                            </span>
-                            {pt.cumKm != null && (
-                              <span className="text-slate-500 font-bold whitespace-nowrap">
-                                누적 {pt.cumKm}km
-                              </span>
+                      {(() => {
+                        const LIMIT = 10;
+                        const needFold = points.length > LIMIT && !showAllGps;
+                        const rows = points.map((pt, idx) => ({ pt, idx }));
+                        const shown = needFold
+                          ? [...rows.slice(0, LIMIT - 1), rows[rows.length - 1]]
+                          : rows;
+                        return shown.map(({ pt, idx }, n) => (
+                          <React.Fragment key={idx}>
+                            {needFold && n === shown.length - 1 && (
+                              <button
+                                type="button"
+                                onClick={() => setShowAllGps(true)}
+                                className="w-full py-2 rounded-xl bg-indigo-100 hover:bg-indigo-200 text-indigo-800 font-black text-xs"
+                              >
+                                ▼ 중간 기록 {points.length - LIMIT}개 더보기
+                              </button>
                             )}
-                          </div>
-                          <div className="font-bold text-slate-800 mt-1 truncate">
-                            📍 {pt.address || '위치 정보'}
-                          </div>
-                        </div>
-                        {pt.lat != null && pt.lng != null && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setLocationModal({
-                                subtitle: `${selectedLog.workDate} · ${
-                                  pt.time || ''
-                                } (${pt.type || '경유'})`,
-                                title: '이동 타임라인 상세 지도',
-                                address: pt.address,
-                                lat: Number(pt.lat),
-                                lng: Number(pt.lng),
-                              })
-                            }
-                            className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white font-bold whitespace-nowrap shrink-0"
-                          >
-                            지도 🔎
-                          </button>
-                        )}
-                      </div>
-                    ))}
+                            <div className="bg-white p-2.5 rounded-xl border border-indigo-100 flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-black whitespace-nowrap">
+                                    {pt.time || '-'} · {pt.type || '이동'}
+                                  </span>
+                                  {pt.cumKm != null && (
+                                    <span className="text-slate-500 font-bold whitespace-nowrap">
+                                      누적 {pt.cumKm}km
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="font-bold text-slate-800 mt-1 truncate">
+                                  📍 {pt.address || '위치 정보'}
+                                </div>
+                              </div>
+                              {pt.lat != null && pt.lng != null && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setLocationModal({
+                                      subtitle: `${selectedLog.workDate} · ${pt.time || ''} (${pt.type || '경유'})`,
+                                      title: '이동 타임라인 상세 지도',
+                                      address: pt.address,
+                                      lat: Number(pt.lat),
+                                      lng: Number(pt.lng),
+                                    })
+                                  }
+                                  className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white font-bold whitespace-nowrap shrink-0"
+                                >
+                                  지도 🔎
+                                </button>
+                              )}
+                            </div>
+                          </React.Fragment>
+                        ));
+                      })()}
+                      {showAllGps && points.length > 10 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllGps(false)}
+                          className="w-full py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs"
+                        >
+                          ▲ 접기
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
