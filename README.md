@@ -232,4 +232,5 @@ firebase deploy --only hosting
 
 ## 👤 개발자 (Author)
 - **1인 풀스택 개발 (Full-Stack Solo Developer)**
-- **GitHub**: [https://github.com/](https://github.com/)
+- **GitHub**: [https://github.com/cash-luv](https://github.com/cash-luv)
+- **Email**: [cash-luv GitHub Profile](https://github.com/cash-luv)
