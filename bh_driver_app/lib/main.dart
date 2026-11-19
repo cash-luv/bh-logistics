@@ -244,6 +244,7 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
     if (!_showInitialPasswordPrompt) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _restoreCameraSessionIfNeeded();
+        GpsTrackerService.ensureBatteryUnrestricted();
         if (mounted) {
           AppUpdateService.checkAndPromptUpdate(context);
         }

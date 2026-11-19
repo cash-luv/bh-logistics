@@ -373,6 +373,14 @@ class GpsTrackerService {
     }
   }
 
+  /// 안드로이드에서 배터리 사용량 '제한 없음' 원터치 허용 및 알림 권한을 요청합니다.
+  static Future<void> ensureBatteryUnrestricted() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _nativeChannel.invokeMethod<bool>('requestBatteryExemption');
+    } catch (_) {}
+  }
+
   /// 안드로이드에서 홈 화면 뒤로가기 시 앱 프로세스를 종료하지 않고 백그라운드로 보냅니다.
   static Future<void> moveToBackground() async {
     if (!Platform.isAndroid) return;
