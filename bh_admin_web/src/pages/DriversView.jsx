@@ -3,6 +3,7 @@ import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  updatePassword,
   signOut,
 } from 'firebase/auth';
 import {
@@ -34,6 +35,151 @@ import Pagination from '../components/Pagination';
 import { syncDriverVehicleTx } from '../services/assignment';
 
 
+const CHO_ROMAN = [
+  'g', 'kk', 'n', 'd', 'tt', 'r', 'm', 'b', 'pp',
+  's', 'ss', 'y', 'j', 'jj', 'ch', 'k', 't', 'p', 'h',
+];
+
+function getKoreanInitials(name) {
+  const cleaned = String(name || '').trim();
+  if (!cleaned) return '';
+  let out = '';
+  for (const ch of cleaned) {
+    const code = ch.charCodeAt(0);
+    if (code >= 0xac00 && code <= 0xd7a3) {
+      const idx = Math.floor((code - 0xac00) / 588);
+      out += CHO_ROMAN[idx] || '';
+    } else if (/[a-z0-9]/i.test(ch)) {
+      out += ch.toLowerCase();
+    }
+  }
+  return out;
+}
+
+function normalizeCode(raw) {
+  return String(raw || '').trim().toLowerCase();
+}
+
+function isValidDriverCode(code) {
+  return /^[a-z0-9._-]{2,32}$/.test(code);
+}
+
+function resolveDriverPin(phoneStr, customPin = '') {
+  const trimmed = String(customPin || '').trim();
+  if (trimmed.length >= 6) return trimmed;
+  const digits = String(phoneStr || '').replace(/[^0-9]/g, '');
+  if (digits.length >= 6) return digits.slice(-6);
+  return '000000';
+}
+
+function makeUniqueCode(base, usedSet, disambiguator = '') {
+  if (!base) return '';
+  const cleanBase = normalizeCode(base);
+  if (!usedSet.has(cleanBase)) return cleanBase;
+  if (disambiguator) {
+    const withDisambig = `${cleanBase}${disambiguator}`;
+    if (!usedSet.has(withDisambig)) return withDisambig;
+  }
+  for (let n = 2; n < 100; n += 1) {
+    const candidate = `${cleanBase}${n}`;
+    if (!usedSet.has(candidate)) return candidate;
+  }
+  return cleanBase;
+}
+
+function buildSuggestedCodes({
+  name,
+  phone,
+  assignedVehicleId,
+  vehicles,
+  drivers,
+  currentDriverId,
+}) {
+  const veh = vehicles.find((v) => v.id === assignedVehicleId);
+  const plateDigits = String(veh?.plateNo || '').replace(/[^0-9]/g, '');
+  const plate4 = plateDigits.length >= 4 ? plateDigits.slice(-4) : plateDigits;
+  const plate2 = plateDigits.length >= 2 ? plateDigits.slice(-2) : '';
+
+  const phoneDigits = String(phone || '').replace(/[^0-9]/g, '');
+  const phone4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : phoneDigits;
+  const phone2 = phoneDigits.length >= 2 ? phoneDigits.slice(-2) : '';
+
+  const initials = getKoreanInitials(name);
+  const usedSet = new Set(
+    drivers
+      .filter((d) => d.id !== currentDriverId)
+      .map((d) => normalizeCode(d.driverCode))
+      .filter(Boolean)
+  );
+
+  const rawCandidates = [];
+  if (plate4) {
+    rawCandidates.push({
+      key: 'vehicle4',
+      label: '🚛 차량번호',
+      code: makeUniqueCode(`bh-${plate4}`, usedSet, initials),
+    });
+  }
+  if (initials) {
+    rawCandidates.push({
+      key: 'initials',
+      label: '👤 성함초성',
+      code: makeUniqueCode(`bh-${initials}`, usedSet, plate2 || phone2),
+    });
+  }
+  if (phone4) {
+    rawCandidates.push({
+      key: 'phone4',
+      label: '📱 연락처4자리',
+      code: makeUniqueCode(`bh-${phone4}`, usedSet, initials),
+    });
+  }
+  if (initials && (plate2 || phone2)) {
+    rawCandidates.push({
+      key: 'hybrid',
+      label: '🔖 초성+차량2자리',
+      code: makeUniqueCode(`bh-${initials}${plate2 || phone2}`, usedSet),
+    });
+  }
+
+  const seen = new Set();
+  return rawCandidates.filter((item) => {
+    if (!item.code || seen.has(item.code)) return false;
+    seen.add(item.code);
+    return true;
+  });
+}
+
+function computeTargetCodeForDriver(driver, vehicles, rule, usedSet) {
+  const veh = vehicles.find((v) => v.id === driver.assignedVehicleId);
+  const plateDigits = String(veh?.plateNo || '').replace(/[^0-9]/g, '');
+  const plate4 = plateDigits.length >= 4 ? plateDigits.slice(-4) : plateDigits;
+  const plate2 = plateDigits.length >= 2 ? plateDigits.slice(-2) : '';
+
+  const phoneDigits = String(driver.phone || '').replace(/[^0-9]/g, '');
+  const phone4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : phoneDigits;
+  const phone2 = phoneDigits.length >= 2 ? phoneDigits.slice(-2) : '';
+
+  const initials = getKoreanInitials(driver.name);
+
+  let base = '';
+  let disambig = plate2 || phone2;
+  if (rule === 'vehicle4') {
+    base = plate4 ? `bh-${plate4}` : phone4 ? `bh-${phone4}` : `bh-${initials || 'drv'}`;
+    disambig = initials;
+  } else if (rule === 'initials') {
+    base = initials ? `bh-${initials}` : phone4 ? `bh-${phone4}` : 'bh-drv';
+    disambig = plate2 || phone2;
+  } else {
+    base = phone4 ? `bh-${phone4}` : plate4 ? `bh-${plate4}` : `bh-${initials || 'drv'}`;
+    disambig = initials;
+  }
+
+  const chosen = makeUniqueCode(base, usedSet, disambig);
+  usedSet.add(chosen);
+  return chosen;
+}
+
 /* ============================================================================
  * [관리자 5] 기사 관리 (Users) - [+ 신규 기사 생성] 버튼 클릭 시 모달 창 오픈
  * ========================================================================== */
@@ -54,6 +200,15 @@ export default function DriversView() {
   const [defaultRouteId, setDefaultRouteId] = useState('');
   const [assignedVehicleId, setAssignedVehicleId] = useState('');
   const [msg, setMsg] = useState('');
+  const [savingDriver, setSavingDriver] = useState(false);
+
+  // 일괄 코드 변환 모달 상태
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkRule, setBulkRule] = useState('vehicle4');
+  const [bulkOnlyNumeric, setBulkOnlyNumeric] = useState(true);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
+  const [bulkResultMsg, setBulkResultMsg] = useState('');
 
   // 기사앱 버전 배포 알림 설정 상태 (Settings/appVersion)
   const [latestAppVersion, setLatestAppVersion] = useState('1.0.9');
@@ -131,9 +286,182 @@ export default function DriversView() {
     setShowCreateModal(true);
   };
 
+  const changeDriverAuthCode = async ({
+    driver,
+    newCode,
+    newPin,
+    updatedFields,
+    vehicleIdToAssign,
+  }) => {
+    const cleanCode = normalizeCode(newCode);
+    const oldCode = normalizeCode(driver.driverCode);
+    const targetPin = resolveDriverPin(
+      updatedFields.phone ?? driver.phone,
+      newPin
+    );
+
+    if (cleanCode === oldCode) {
+      await setDoc(
+        doc(db, 'Users', driver.id),
+        {
+          ...updatedFields,
+          driverCode: cleanCode,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      await syncDriverVehicleTx({
+        driverId: driver.id,
+        vehicleId: vehicleIdToAssign || null,
+      });
+      return {
+        newUid: driver.id,
+        codeChanged: false,
+        cleanCode,
+        appliedPin: null,
+      };
+    }
+
+    if (auth.currentUser && driver.id === auth.currentUser.uid) {
+      throw new Error(
+        '현재 로그인된 관리자 계정의 기사 코드는 여기서 변경할 수 없습니다.'
+      );
+    }
+
+    const email = `${cleanCode}@bhlogistics.local`;
+    let cred;
+    try {
+      cred = await createUserWithEmailAndPassword(
+        secondaryAuth,
+        email,
+        targetPin
+      );
+    } catch (authErr) {
+      if (authErr.code === 'auth/email-already-in-use') {
+        const oldPhoneDigits = String(driver.phone || '').replace(
+          /[^0-9]/g,
+          ''
+        );
+        const candidatePins = Array.from(
+          new Set(
+            [
+              targetPin,
+              oldPhoneDigits.length >= 6 ? oldPhoneDigits.slice(-6) : null,
+              '000000',
+              '123456',
+            ].filter(Boolean)
+          )
+        );
+        let signedIn = null;
+        for (const pin of candidatePins) {
+          try {
+            signedIn = await signInWithEmailAndPassword(
+              secondaryAuth,
+              email,
+              pin
+            );
+            break;
+          } catch (_) {
+            // 다음 후보 비밀번호 시도
+          }
+        }
+        if (!signedIn) {
+          throw new Error(
+            `코드(${cleanCode})는 이미 인증 서버에 등록되어 있고 비밀번호가 다릅니다. 다른 코드를 선택해 주세요.`
+          );
+        }
+        cred = signedIn;
+        if (String(newPin || '').trim().length >= 6) {
+          try {
+            await updatePassword(cred.user, String(newPin).trim());
+          } catch (_) {
+            // 비밀번호 변경 불가 시 기존 인증 유지
+          }
+        }
+      } else {
+        throw authErr;
+      }
+    }
+
+    const newUid = cred.user.uid;
+    try {
+      await signOut(secondaryAuth);
+    } catch (_) {}
+
+    const { id: _ignoredId, ...restDriverData } = driver;
+    await setDoc(
+      doc(db, 'Users', newUid),
+      {
+        ...restDriverData,
+        ...updatedFields,
+        role: restDriverData.role || 'driver',
+        driverCode: cleanCode,
+        isActive: restDriverData.isActive !== false,
+        assignedVehicleId: restDriverData.assignedVehicleId || null,
+        mustChangePassword:
+          typeof restDriverData.mustChangePassword === 'boolean'
+            ? restDriverData.mustChangePassword
+            : true,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    await syncDriverVehicleTx({
+      driverId: newUid,
+      vehicleId: vehicleIdToAssign || null,
+    });
+
+    if (newUid !== driver.id) {
+      if (
+        driver.assignedVehicleId &&
+        driver.assignedVehicleId !== (vehicleIdToAssign || null)
+      ) {
+        await setDoc(
+          doc(db, 'Vehicles', driver.assignedVehicleId),
+          {
+            assignedDriverId: null,
+            assignedDriverName: null,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+      await deleteDoc(doc(db, 'Users', driver.id));
+    }
+
+    return {
+      newUid,
+      codeChanged: true,
+      cleanCode,
+      appliedPin: targetPin,
+    };
+  };
+
   const handleSaveDriver = async (e) => {
     e.preventDefault();
+    if (savingDriver) return;
     setMsg('');
+
+    const cleanCode = normalizeCode(driverCode);
+    if (!cleanCode || !isValidDriverCode(cleanCode)) {
+      setMsg(
+        '기사 코드는 영문 소문자, 숫자, 하이픈(-), 밑줄(_)로 2자 이상 입력해 주세요. (예: bh-8805, bh-jtg)'
+      );
+      return;
+    }
+
+    const duplicated = drivers.find(
+      (d) =>
+        d.id !== editingDriver?.id &&
+        normalizeCode(d.driverCode) === cleanCode
+    );
+    if (duplicated) {
+      setMsg(
+        `이미 [${duplicated.name}] 기사님이 사용 중인 코드(${cleanCode})입니다. 다른 코드를 입력해 주세요.`
+      );
+      return;
+    }
 
     // 1) 기존 기사 정보 수정 모드
     if (editingDriver) {
@@ -141,50 +469,64 @@ export default function DriversView() {
         setMsg('기사 성함을 입력해 주세요.');
         return;
       }
+      if (birthPin.trim() && birthPin.trim().length < 6) {
+        setMsg('새 비밀번호는 6자리 이상이거나, 비워두셔야 합니다.');
+        return;
+      }
+      setSavingDriver(true);
       try {
-        await setDoc(
-          doc(db, 'Users', editingDriver.id),
-          {
+        const result = await changeDriverAuthCode({
+          driver: editingDriver,
+          newCode: cleanCode,
+          newPin: birthPin.trim(),
+          updatedFields: {
             name: driverName.trim(),
             phone: phone.trim(),
             hireDate,
             defaultRouteId: defaultRouteId || null,
-            updatedAt: serverTimestamp(),
           },
-          { merge: true }
-        );
-        await syncDriverVehicleTx({
-          driverId: editingDriver.id,
-          vehicleId: assignedVehicleId || null,
+          vehicleIdToAssign: assignedVehicleId || null,
         });
         setShowCreateModal(false);
         setEditingDriver(null);
+        setBirthPin('');
         await loadAll();
+        if (result.codeChanged) {
+          alert(
+            `✅ [${driverName.trim()}] 기사 코드가 [${result.cleanCode}](으)로 변경되었습니다!\n` +
+              `기사앱 로그인 비밀번호: ${result.appliedPin}\n` +
+              `(기사님께 새 코드로 다시 로그인하도록 안내해 주세요.)`
+          );
+        }
       } catch (err) {
         setMsg(`❌ 오류: ${err.message}`);
+      } finally {
+        setSavingDriver(false);
       }
       return;
     }
 
     // 2) 신규 기사 생성 모드
-    if (!driverCode || birthPin.length < 6 || !driverName) {
-      setMsg('기사 코드, 초기 생년월일 6자리, 성함을 모두 입력해 주세요.');
+    if (!cleanCode || birthPin.trim().length < 6 || !driverName.trim()) {
+      setMsg('기사 코드, 초기 비밀번호 6자리, 성함을 모두 입력해 주세요.');
       return;
     }
+    setSavingDriver(true);
     try {
-      const code = driverCode.trim().toLowerCase();
-      const email = `${code}@bhlogistics.local`;
+      const email = `${cleanCode}@bhlogistics.local`;
       const cred = await createUserWithEmailAndPassword(
         secondaryAuth,
         email,
         birthPin.trim()
       );
       const uid = cred.user.uid;
-      await signOut(secondaryAuth);
+      try {
+        await signOut(secondaryAuth);
+      } catch (_) {}
 
       await setDoc(doc(db, 'Users', uid), {
         role: 'driver',
-        driverCode: code,
+        driverCode: cleanCode,
         name: driverName.trim(),
         phone: phone.trim(),
         hireDate,
@@ -209,10 +551,106 @@ export default function DriversView() {
       setPhone('');
       setAssignedVehicleId('');
       setShowCreateModal(false);
-      alert(`✅ 기사 등록 완료! (ID코드: ${code}, 초기비밀번호: ${birthPin})`);
-      loadAll();
+      alert(`✅ 기사 등록 완료! (ID코드: ${cleanCode}, 초기비밀번호: ${birthPin.trim()})`);
+      await loadAll();
     } catch (err) {
       setMsg(`❌ 오류: ${err.message}`);
+    } finally {
+      setSavingDriver(false);
+    }
+  };
+
+  const buildBulkPlan = (rule = bulkRule, onlyNumeric = bulkOnlyNumeric) => {
+    const isNumericStyle = (code) => /^bh[-_]?\d{1,3}$/i.test(normalizeCode(code));
+    const reserved = new Set();
+
+    // 고정 유지 대상의 코드는 먼저 선점
+    drivers.forEach((d) => {
+      const cur = normalizeCode(d.driverCode);
+      const isProtected =
+        cur === 'bh-ceo' ||
+        d.role === 'admin' ||
+        (auth.currentUser && d.id === auth.currentUser.uid);
+      const skipNonNumeric = onlyNumeric && cur && !isNumericStyle(cur);
+      if ((isProtected || skipNonNumeric) && cur) {
+        reserved.add(cur);
+      }
+    });
+
+    return drivers.map((d) => {
+      const cur = normalizeCode(d.driverCode);
+      const isProtected =
+        cur === 'bh-ceo' ||
+        d.role === 'admin' ||
+        (auth.currentUser && d.id === auth.currentUser.uid);
+      const skipNonNumeric = onlyNumeric && cur && !isNumericStyle(cur);
+
+      if (isProtected) {
+        return { driver: d, currentCode: cur || '-', nextCode: cur || '-', reason: '대표/관리자 유지', willChange: false };
+      }
+      if (skipNonNumeric) {
+        return { driver: d, currentCode: cur, nextCode: cur, reason: '이미 맞춤 코드', willChange: false };
+      }
+      const nextCode = computeTargetCodeForDriver(d, vehicles, rule, reserved);
+      return {
+        driver: d,
+        currentCode: cur || '-',
+        nextCode,
+        reason: nextCode === cur ? '동일 유지' : '변경 예정',
+        willChange: nextCode !== cur,
+      };
+    });
+  };
+
+  const handleBulkConvertCodes = async () => {
+    if (bulkRunning) return;
+    const plan = buildBulkPlan().filter((row) => row.willChange);
+    if (plan.length === 0) {
+      alert('변경할 대상 기사가 없습니다.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `총 ${plan.length}명의 기사 코드를 일괄 변경할까요?\n` +
+          `(변경 후 각 기사의 로그인 비밀번호는 연락처 뒤 6자리 또는 000000으로 자동 설정됩니다.)`
+      )
+    ) {
+      return;
+    }
+    setBulkRunning(true);
+    setBulkResultMsg('');
+    setBulkProgress({ done: 0, total: plan.length });
+    let successCount = 0;
+    const failed = [];
+    for (let i = 0; i < plan.length; i += 1) {
+      const item = plan[i];
+      try {
+        await changeDriverAuthCode({
+          driver: item.driver,
+          newCode: item.nextCode,
+          newPin: '',
+          updatedFields: {
+            name: item.driver.name || '',
+            phone: item.driver.phone || '',
+            hireDate: item.driver.hireDate || todayKstStr(),
+            defaultRouteId: item.driver.defaultRouteId || null,
+          },
+          vehicleIdToAssign: item.driver.assignedVehicleId || null,
+        });
+        successCount += 1;
+      } catch (err) {
+        failed.push(`${item.driver.name}(${item.currentCode}): ${err.message}`);
+      }
+      setBulkProgress({ done: i + 1, total: plan.length });
+    }
+    await loadAll();
+    setBulkRunning(false);
+    if (failed.length === 0) {
+      setBulkResultMsg(`✅ ${successCount}명의 기사 코드가 모두 깔끔하게 변경되었습니다!`);
+    } else {
+      setBulkResultMsg(
+        `⚠️ ${successCount}명 완료, ${failed.length}명 실패:\n${failed.join('\n')}`
+      );
     }
   };
 
@@ -269,21 +707,47 @@ export default function DriversView() {
     currentPage * 10
   );
 
+  const suggestedCodes = showCreateModal
+    ? buildSuggestedCodes({
+        name: driverName,
+        phone,
+        assignedVehicleId,
+        vehicles,
+        drivers,
+        currentDriverId: editingDriver?.id,
+      })
+    : [];
+
+  const bulkPlan = showBulkModal ? buildBulkPlan() : [];
+  const bulkChangeCount = bulkPlan.filter((row) => row.willChange).length;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-black">기사 관리 (Users)</h1>
           <p className="text-sm text-slate-500 mt-1">
-            우측 상단 [+ 신규 기사 생성] 또는 각 기사의 [정보 수정] 버튼으로 차량·노선·연락처를 양방향으로 관리할 수 있습니다.
+            기사 코드를 클릭하거나 [정보 수정]을 눌러 로그인 코드·차량·노선·연락처를 바꿀 수 있습니다.
           </p>
         </div>
-        <button
-          onClick={openCreateDriverModal}
-          className="px-5 py-2.5 bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold rounded-xl text-sm shadow whitespace-nowrap"
-        >
-          + 신규 기사 생성
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => {
+              setBulkResultMsg('');
+              setBulkProgress({ done: 0, total: 0 });
+              setShowBulkModal(true);
+            }}
+            className="px-4 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold rounded-xl text-sm whitespace-nowrap"
+          >
+            🪄 기사 코드 일괄 변환
+          </button>
+          <button
+            onClick={openCreateDriverModal}
+            className="px-5 py-2.5 bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold rounded-xl text-sm shadow whitespace-nowrap"
+          >
+            + 신규 기사 생성
+          </button>
+        </div>
       </div>
 
       {/* 기사앱 새 버전 업데이트 알림 설정 카드 (Settings/appVersion) */}
@@ -415,17 +879,27 @@ export default function DriversView() {
                 pagedDrivers.map((d) => (
                 <tr key={d.id} className="hover:bg-slate-50">
                   <td className="p-3 font-bold text-[#1E5EFF]">
-                    {d.driverCode === 'bh-ceo' ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-amber-500 text-white font-black text-xs shadow-sm">
-                        👑 bh-ceo
+                    <button
+                      type="button"
+                      onClick={() => openEditDriverModal(d)}
+                      title="클릭하여 기사 코드 수정"
+                      className="group inline-flex items-center gap-1.5 text-left hover:underline cursor-pointer"
+                    >
+                      {d.driverCode === 'bh-ceo' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-amber-500 text-white font-black text-xs shadow-sm">
+                          👑 bh-ceo
+                        </span>
+                      ) : d.driverCode === 'bh-tk' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-indigo-600 text-white font-black text-xs shadow-sm">
+                          ⭐ bh-tk
+                        </span>
+                      ) : (
+                        <span>{d.driverCode || '-'}</span>
+                      )}
+                      <span className="text-[11px] text-slate-400 group-hover:text-[#1E5EFF]">
+                        ✎
                       </span>
-                    ) : d.driverCode === 'bh-tk' ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-indigo-600 text-white font-black text-xs shadow-sm">
-                        ⭐ bh-tk
-                      </span>
-                    ) : (
-                      d.driverCode || '-'
-                    )}
+                    </button>
                   </td>
                   <td className="p-3 font-bold">
                     {d.name}
@@ -542,12 +1016,12 @@ export default function DriversView() {
       {/* 신규 기사 생성 / 기존 기사 수정 모달 창 */}
       {showCreateModal && (
         <div
-          onClick={() => setShowCreateModal(false)}
-          className="fixed inset-0 bg-black/60 flex items-center justify-center p-6 z-50"
+          onClick={() => !savingDriver && setShowCreateModal(false)}
+          className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 sm:p-6 z-50"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl p-6 max-w-lg w-full space-y-4 shadow-2xl"
+            className="bg-white rounded-2xl p-6 max-w-lg w-full max-h-[90vh] overflow-y-auto space-y-4 shadow-2xl"
           >
             <div className="flex items-center justify-between border-b pb-3">
               <div>
@@ -561,6 +1035,8 @@ export default function DriversView() {
                 </h2>
               </div>
               <button
+                type="button"
+                disabled={savingDriver}
                 onClick={() => setShowCreateModal(false)}
                 className="px-3 py-1 rounded-lg bg-slate-100 font-bold text-sm"
               >
@@ -569,36 +1045,69 @@ export default function DriversView() {
             </div>
 
             <form onSubmit={handleSaveDriver} className="space-y-3 text-sm">
-              {!editingDriver && (
-                <>
-                  <div>
-                    <label className="block font-bold text-slate-700 mb-1">
-                      1. 부여할 기사 코드 (로그인 아이디)
-                    </label>
-                    <input
-                      placeholder="예: bh04"
-                      value={driverCode}
-                      onChange={(e) => setDriverCode(e.target.value)}
-                      className="w-full px-3 py-2.5 border rounded-xl font-bold"
-                    />
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  1. 기사 코드 (로그인 아이디)
+                </label>
+                <input
+                  placeholder="예: bh-8805 또는 bh-jtg"
+                  value={driverCode}
+                  onChange={(e) => setDriverCode(e.target.value)}
+                  className="w-full px-3 py-2.5 border rounded-xl font-bold"
+                />
+                {suggestedCodes.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] font-bold text-slate-500 mr-0.5">
+                      추천 코드 클릭 적용:
+                    </span>
+                    {suggestedCodes.map((s) => (
+                      <button
+                        key={s.key}
+                        type="button"
+                        onClick={() => setDriverCode(s.code)}
+                        className={`px-2 py-1 rounded-lg text-xs font-bold border transition ${
+                          normalizeCode(driverCode) === s.code
+                            ? 'bg-[#1E5EFF] text-white border-[#1E5EFF]'
+                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-blue-50 hover:border-blue-300'
+                        }`}
+                      >
+                        {s.label} ({s.code})
+                      </button>
+                    ))}
                   </div>
-                  <div>
-                    <label className="block font-bold text-slate-700 mb-1">
-                      2. 초기 비밀번호 (생년월일 6자리)
-                    </label>
-                    <input
-                      placeholder="예: 700101 (첫 로그인 후 기사님이 직접 변경)"
-                      value={birthPin}
-                      onChange={(e) => setBirthPin(e.target.value)}
-                      className="w-full px-3 py-2.5 border rounded-xl font-bold"
-                    />
-                  </div>
-                </>
-              )}
+                )}
+                {editingDriver &&
+                  normalizeCode(driverCode) &&
+                  normalizeCode(driverCode) !==
+                    normalizeCode(editingDriver.driverCode) && (
+                    <p className="mt-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                      코드를 바꾸면 새 로그인 계정이 생성되어 기존 기사 정보와 배정 차량이 자동으로 연결됩니다.
+                    </p>
+                  )}
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  {editingDriver
+                    ? '2. 비밀번호 설정 (코드 변경 시 적용 · 선택)'
+                    : '2. 초기 비밀번호 (생년월일 또는 연락처 6자리)'}
+                </label>
+                <input
+                  placeholder={
+                    editingDriver
+                      ? '비워두면 연락처 뒤 6자리(또는 000000)로 자동 설정'
+                      : '예: 700101 (첫 로그인 후 기사님이 직접 변경)'
+                  }
+                  value={birthPin}
+                  onChange={(e) => setBirthPin(e.target.value)}
+                  className="w-full px-3 py-2.5 border rounded-xl font-bold"
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    {editingDriver ? '1. 기사 성함' : '3. 기사 성함'}
+                    3. 기사 성함
                   </label>
                   <input
                     placeholder="예: 최동훈"
@@ -609,7 +1118,7 @@ export default function DriversView() {
                 </div>
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    {editingDriver ? '2. 연락처' : '4. 연락처'}
+                    4. 연락처
                   </label>
                   <input
                     placeholder="예: 010-1234-5678"
@@ -622,9 +1131,7 @@ export default function DriversView() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    {editingDriver
-                      ? '3. 배정할 차량 (양방향 연동)'
-                      : '5. 배정할 차량 (양방향 연동)'}
+                    5. 배정할 차량 (양방향 연동)
                   </label>
                   <select
                     value={assignedVehicleId}
@@ -641,7 +1148,7 @@ export default function DriversView() {
                 </div>
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    {editingDriver ? '4. 기본 담당 노선' : '6. 기본 담당 노선'}
+                    6. 기본 담당 노선
                   </label>
                   <select
                     value={defaultRouteId}
@@ -659,7 +1166,7 @@ export default function DriversView() {
               </div>
               <div>
                 <label className="block font-bold text-slate-700 mb-1">
-                  {editingDriver ? '5. 입사일' : '7. 입사일'}
+                  7. 입사일
                 </label>
                 <input
                   type="date"
@@ -678,6 +1185,7 @@ export default function DriversView() {
               <div className="flex justify-end gap-2 pt-3 border-t">
                 <button
                   type="button"
+                  disabled={savingDriver}
                   onClick={() => setShowCreateModal(false)}
                   className="px-4 py-2.5 rounded-xl bg-slate-100 font-bold"
                 >
@@ -685,12 +1193,201 @@ export default function DriversView() {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-[#1E5EFF] text-white font-bold"
+                  disabled={savingDriver}
+                  className="px-5 py-2.5 rounded-xl bg-[#1E5EFF] text-white font-bold disabled:opacity-60"
                 >
-                  {editingDriver ? '기사 정보 수정 저장' : '기사 계정 생성하기'}
+                  {savingDriver
+                    ? '저장 중...'
+                    : editingDriver
+                      ? '기사 정보 수정 저장'
+                      : '기사 계정 생성하기'}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 기사 코드 일괄 변환 모달 */}
+      {showBulkModal && (
+        <div
+          onClick={() => !bulkRunning && setShowBulkModal(false)}
+          className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 sm:p-6 z-50"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl p-6 max-w-3xl w-full max-h-[90vh] flex flex-col space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b pb-3">
+              <div>
+                <div className="text-xs font-bold text-indigo-600">
+                  숫자 나열형(bh01, bh02...) → 직관형 코드 일괄 전환
+                </div>
+                <h2 className="text-xl font-black">
+                  🪄 기사 코드 규칙 일괄 변환
+                </h2>
+              </div>
+              <button
+                type="button"
+                disabled={bulkRunning}
+                onClick={() => setShowBulkModal(false)}
+                className="px-3 py-1 rounded-lg bg-slate-100 font-bold text-sm"
+              >
+                닫기
+              </button>
+            </div>
+
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  disabled={bulkRunning}
+                  onClick={() => setBulkRule('vehicle4')}
+                  className={`p-3 rounded-xl border text-left transition ${
+                    bulkRule === 'vehicle4'
+                      ? 'border-[#1E5EFF] bg-blue-50 ring-1 ring-[#1E5EFF]'
+                      : 'border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="font-black text-slate-900">
+                    🚛 차량번호 뒤 4자리 (추천)
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    예: bh-8805 (미배정은 연락처 4자리)
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkRunning}
+                  onClick={() => setBulkRule('initials')}
+                  className={`p-3 rounded-xl border text-left transition ${
+                    bulkRule === 'initials'
+                      ? 'border-[#1E5EFF] bg-blue-50 ring-1 ring-[#1E5EFF]'
+                      : 'border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="font-black text-slate-900">
+                    👤 성함 영문 초성
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    예: bh-jtg (중복 시 숫자 결합)
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkRunning}
+                  onClick={() => setBulkRule('phone4')}
+                  className={`p-3 rounded-xl border text-left transition ${
+                    bulkRule === 'phone4'
+                      ? 'border-[#1E5EFF] bg-blue-50 ring-1 ring-[#1E5EFF]'
+                      : 'border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="font-black text-slate-900">
+                    📱 연락처 뒤 4자리
+                  </div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    예: bh-5678 (기사님이 절대 안 까먹음)
+                  </div>
+                </button>
+              </div>
+
+              <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  disabled={bulkRunning}
+                  checked={bulkOnlyNumeric}
+                  onChange={(e) => setBulkOnlyNumeric(e.target.checked)}
+                />
+                기존 숫자형 코드(bh01, bh02...)만 바꾸고 영문·차량형 맞춤 코드는 그대로 유지
+              </label>
+            </div>
+
+            <div className="flex-1 overflow-y-auto border rounded-xl">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 border-b font-bold sticky top-0">
+                  <tr>
+                    <th className="p-2.5">기사 성함</th>
+                    <th className="p-2.5">배정 차량</th>
+                    <th className="p-2.5">현재 코드</th>
+                    <th className="p-2.5">변환될 코드</th>
+                    <th className="p-2.5">상태</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {bulkPlan.map((row) => {
+                    const veh = vehicles.find(
+                      (v) => v.id === row.driver.assignedVehicleId
+                    );
+                    return (
+                      <tr
+                        key={row.driver.id}
+                        className={row.willChange ? 'bg-blue-50/40' : ''}
+                      >
+                        <td className="p-2.5 font-bold">{row.driver.name}</td>
+                        <td className="p-2.5 text-slate-600">
+                          {veh ? veh.plateNo : '미배정'}
+                        </td>
+                        <td className="p-2.5 font-mono text-slate-600">
+                          {row.currentCode}
+                        </td>
+                        <td className="p-2.5 font-mono font-black text-[#1E5EFF]">
+                          {row.nextCode}
+                        </td>
+                        <td className="p-2.5">
+                          <span
+                            className={`px-2 py-0.5 rounded-full font-bold ${
+                              row.willChange
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}
+                          >
+                            {row.reason}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {bulkRunning && (
+              <div className="p-3 rounded-xl bg-blue-50 text-[#1E5EFF] font-bold text-xs">
+                코드 변환 진행 중... ({bulkProgress.done} / {bulkProgress.total})
+              </div>
+            )}
+            {bulkResultMsg && (
+              <div className="p-3 rounded-xl bg-emerald-50 text-emerald-800 font-bold text-xs whitespace-pre-line">
+                {bulkResultMsg}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t text-sm">
+              <div className="text-xs text-slate-500 font-semibold">
+                변경 예정: <b className="text-slate-900">{bulkChangeCount}명</b> (변경 시 비밀번호는 연락처 뒤 6자리 자동 설정)
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={bulkRunning}
+                  onClick={() => setShowBulkModal(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 font-bold"
+                >
+                  닫기
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkRunning || bulkChangeCount === 0}
+                  onClick={handleBulkConvertCodes}
+                  className="px-5 py-2 rounded-xl bg-[#1E5EFF] text-white font-bold disabled:opacity-50"
+                >
+                  {bulkRunning
+                    ? `변환 중 (${bulkProgress.done}/${bulkProgress.total})`
+                    : `${bulkChangeCount}명 일괄 변환 실행`}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
