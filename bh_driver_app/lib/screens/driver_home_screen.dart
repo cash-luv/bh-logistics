@@ -107,7 +107,6 @@ class DriverHomeScreen extends StatelessWidget {
                           onTap: onFuelLog!,
                         ),
                       ],
-                      const SizedBox(height: 12),
                       const AppVersionLabel(),
                     ],
                   ),

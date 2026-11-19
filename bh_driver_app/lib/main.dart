@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 
 import 'firebase_options.dart';
 import 'models/driver_home_info.dart';
+import 'screens/app_version_label.dart';
 import 'screens/change_password_screen.dart';
 import 'screens/check_in_screen.dart';
 import 'screens/check_out_screen.dart';
@@ -117,6 +118,8 @@ class _BrandLoadingScreen extends StatelessWidget {
                     color: AppColors.subText,
                   ),
                 ),
+                const SizedBox(height: 12),
+                const AppVersionLabel(),
               ],
             ),
           ),
