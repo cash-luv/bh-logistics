@@ -150,36 +150,6 @@ function buildSuggestedCodes({
   });
 }
 
-function computeTargetCodeForDriver(driver, vehicles, rule, usedSet) {
-  const veh = vehicles.find((v) => v.id === driver.assignedVehicleId);
-  const plateDigits = String(veh?.plateNo || '').replace(/[^0-9]/g, '');
-  const plate4 = plateDigits.length >= 4 ? plateDigits.slice(-4) : plateDigits;
-  const plate2 = plateDigits.length >= 2 ? plateDigits.slice(-2) : '';
-
-  const phoneDigits = String(driver.phone || '').replace(/[^0-9]/g, '');
-  const phone4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : phoneDigits;
-  const phone2 = phoneDigits.length >= 2 ? phoneDigits.slice(-2) : '';
-
-  const initials = getKoreanInitials(driver.name);
-
-  let base = '';
-  let disambig = plate2 || phone2;
-  if (rule === 'vehicle4') {
-    base = plate4 ? `bh-${plate4}` : phone4 ? `bh-${phone4}` : `bh-${initials || 'drv'}`;
-    disambig = initials;
-  } else if (rule === 'initials') {
-    base = initials ? `bh-${initials}` : phone4 ? `bh-${phone4}` : 'bh-drv';
-    disambig = plate2 || phone2;
-  } else {
-    base = phone4 ? `bh-${phone4}` : plate4 ? `bh-${plate4}` : `bh-${initials || 'drv'}`;
-    disambig = initials;
-  }
-
-  const chosen = makeUniqueCode(base, usedSet, disambig);
-  usedSet.add(chosen);
-  return chosen;
-}
-
 /* ============================================================================
  * [관리자 5] 기사 관리 (Users) - [+ 신규 기사 생성] 버튼 클릭 시 모달 창 오픈
  * ========================================================================== */
@@ -201,14 +171,6 @@ export default function DriversView() {
   const [assignedVehicleId, setAssignedVehicleId] = useState('');
   const [msg, setMsg] = useState('');
   const [savingDriver, setSavingDriver] = useState(false);
-
-  // 일괄 코드 변환 모달 상태
-  const [showBulkModal, setShowBulkModal] = useState(false);
-  const [bulkRule, setBulkRule] = useState('vehicle4');
-  const [bulkOnlyNumeric, setBulkOnlyNumeric] = useState(true);
-  const [bulkRunning, setBulkRunning] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
-  const [bulkResultMsg, setBulkResultMsg] = useState('');
 
   // 기사앱 버전 배포 알림 설정 상태 (Settings/appVersion)
   const [latestAppVersion, setLatestAppVersion] = useState('1.0.9');
@@ -560,100 +522,6 @@ export default function DriversView() {
     }
   };
 
-  const buildBulkPlan = (rule = bulkRule, onlyNumeric = bulkOnlyNumeric) => {
-    const isNumericStyle = (code) => /^bh[-_]?\d{1,3}$/i.test(normalizeCode(code));
-    const reserved = new Set();
-
-    // 고정 유지 대상의 코드는 먼저 선점
-    drivers.forEach((d) => {
-      const cur = normalizeCode(d.driverCode);
-      const isProtected =
-        cur === 'bh-ceo' ||
-        d.role === 'admin' ||
-        (auth.currentUser && d.id === auth.currentUser.uid);
-      const skipNonNumeric = onlyNumeric && cur && !isNumericStyle(cur);
-      if ((isProtected || skipNonNumeric) && cur) {
-        reserved.add(cur);
-      }
-    });
-
-    return drivers.map((d) => {
-      const cur = normalizeCode(d.driverCode);
-      const isProtected =
-        cur === 'bh-ceo' ||
-        d.role === 'admin' ||
-        (auth.currentUser && d.id === auth.currentUser.uid);
-      const skipNonNumeric = onlyNumeric && cur && !isNumericStyle(cur);
-
-      if (isProtected) {
-        return { driver: d, currentCode: cur || '-', nextCode: cur || '-', reason: '대표/관리자 유지', willChange: false };
-      }
-      if (skipNonNumeric) {
-        return { driver: d, currentCode: cur, nextCode: cur, reason: '이미 맞춤 코드', willChange: false };
-      }
-      const nextCode = computeTargetCodeForDriver(d, vehicles, rule, reserved);
-      return {
-        driver: d,
-        currentCode: cur || '-',
-        nextCode,
-        reason: nextCode === cur ? '동일 유지' : '변경 예정',
-        willChange: nextCode !== cur,
-      };
-    });
-  };
-
-  const handleBulkConvertCodes = async () => {
-    if (bulkRunning) return;
-    const plan = buildBulkPlan().filter((row) => row.willChange);
-    if (plan.length === 0) {
-      alert('변경할 대상 기사가 없습니다.');
-      return;
-    }
-    if (
-      !window.confirm(
-        `총 ${plan.length}명의 기사 코드를 일괄 변경할까요?\n` +
-          `(변경 후 각 기사의 로그인 비밀번호는 연락처 뒤 6자리 또는 000000으로 자동 설정됩니다.)`
-      )
-    ) {
-      return;
-    }
-    setBulkRunning(true);
-    setBulkResultMsg('');
-    setBulkProgress({ done: 0, total: plan.length });
-    let successCount = 0;
-    const failed = [];
-    for (let i = 0; i < plan.length; i += 1) {
-      const item = plan[i];
-      try {
-        await changeDriverAuthCode({
-          driver: item.driver,
-          newCode: item.nextCode,
-          newPin: '',
-          updatedFields: {
-            name: item.driver.name || '',
-            phone: item.driver.phone || '',
-            hireDate: item.driver.hireDate || todayKstStr(),
-            defaultRouteId: item.driver.defaultRouteId || null,
-          },
-          vehicleIdToAssign: item.driver.assignedVehicleId || null,
-        });
-        successCount += 1;
-      } catch (err) {
-        failed.push(`${item.driver.name}(${item.currentCode}): ${err.message}`);
-      }
-      setBulkProgress({ done: i + 1, total: plan.length });
-    }
-    await loadAll();
-    setBulkRunning(false);
-    if (failed.length === 0) {
-      setBulkResultMsg(`✅ ${successCount}명의 기사 코드가 모두 깔끔하게 변경되었습니다!`);
-    } else {
-      setBulkResultMsg(
-        `⚠️ ${successCount}명 완료, ${failed.length}명 실패:\n${failed.join('\n')}`
-      );
-    }
-  };
-
   const toggleActive = async (d) => {
     const next = d.isActive === false;
     if (
@@ -718,9 +586,6 @@ export default function DriversView() {
       })
     : [];
 
-  const bulkPlan = showBulkModal ? buildBulkPlan() : [];
-  const bulkChangeCount = bulkPlan.filter((row) => row.willChange).length;
-
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -730,24 +595,12 @@ export default function DriversView() {
             기사 코드를 클릭하거나 [정보 수정]을 눌러 로그인 코드·차량·노선·연락처를 바꿀 수 있습니다.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => {
-              setBulkResultMsg('');
-              setBulkProgress({ done: 0, total: 0 });
-              setShowBulkModal(true);
-            }}
-            className="px-4 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold rounded-xl text-sm whitespace-nowrap"
-          >
-            🪄 기사 코드 일괄 변환
-          </button>
-          <button
-            onClick={openCreateDriverModal}
-            className="px-5 py-2.5 bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold rounded-xl text-sm shadow whitespace-nowrap"
-          >
-            + 신규 기사 생성
-          </button>
-        </div>
+        <button
+          onClick={openCreateDriverModal}
+          className="px-5 py-2.5 bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold rounded-xl text-sm shadow whitespace-nowrap"
+        >
+          + 신규 기사 생성
+        </button>
       </div>
 
       {/* 기사앱 새 버전 업데이트 알림 설정 카드 (Settings/appVersion) */}
@@ -1208,189 +1061,6 @@ export default function DriversView() {
         </div>
       )}
 
-      {/* 기사 코드 일괄 변환 모달 */}
-      {showBulkModal && (
-        <div
-          onClick={() => !bulkRunning && setShowBulkModal(false)}
-          className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 sm:p-6 z-50"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl p-6 max-w-3xl w-full max-h-[90vh] flex flex-col space-y-4 shadow-2xl"
-          >
-            <div className="flex items-center justify-between border-b pb-3">
-              <div>
-                <div className="text-xs font-bold text-indigo-600">
-                  숫자 나열형(bh01, bh02...) → 직관형 코드 일괄 전환
-                </div>
-                <h2 className="text-xl font-black">
-                  🪄 기사 코드 규칙 일괄 변환
-                </h2>
-              </div>
-              <button
-                type="button"
-                disabled={bulkRunning}
-                onClick={() => setShowBulkModal(false)}
-                className="px-3 py-1 rounded-lg bg-slate-100 font-bold text-sm"
-              >
-                닫기
-              </button>
-            </div>
-
-            <div className="space-y-3 text-sm">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  disabled={bulkRunning}
-                  onClick={() => setBulkRule('vehicle4')}
-                  className={`p-3 rounded-xl border text-left transition ${
-                    bulkRule === 'vehicle4'
-                      ? 'border-[#1E5EFF] bg-blue-50 ring-1 ring-[#1E5EFF]'
-                      : 'border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <div className="font-black text-slate-900">
-                    🚛 차량번호 뒤 4자리 (추천)
-                  </div>
-                  <div className="text-xs text-slate-500 mt-0.5">
-                    예: bh-8805 (미배정은 연락처 4자리)
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  disabled={bulkRunning}
-                  onClick={() => setBulkRule('initials')}
-                  className={`p-3 rounded-xl border text-left transition ${
-                    bulkRule === 'initials'
-                      ? 'border-[#1E5EFF] bg-blue-50 ring-1 ring-[#1E5EFF]'
-                      : 'border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <div className="font-black text-slate-900">
-                    👤 성함 영문 초성
-                  </div>
-                  <div className="text-xs text-slate-500 mt-0.5">
-                    예: bh-jtg (중복 시 숫자 결합)
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  disabled={bulkRunning}
-                  onClick={() => setBulkRule('phone4')}
-                  className={`p-3 rounded-xl border text-left transition ${
-                    bulkRule === 'phone4'
-                      ? 'border-[#1E5EFF] bg-blue-50 ring-1 ring-[#1E5EFF]'
-                      : 'border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <div className="font-black text-slate-900">
-                    📱 연락처 뒤 4자리
-                  </div>
-                  <div className="text-xs text-slate-500 mt-0.5">
-                    예: bh-5678 (기사님이 절대 안 까먹음)
-                  </div>
-                </button>
-              </div>
-
-              <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  disabled={bulkRunning}
-                  checked={bulkOnlyNumeric}
-                  onChange={(e) => setBulkOnlyNumeric(e.target.checked)}
-                />
-                기존 숫자형 코드(bh01, bh02...)만 바꾸고 영문·차량형 맞춤 코드는 그대로 유지
-              </label>
-            </div>
-
-            <div className="flex-1 overflow-y-auto border rounded-xl">
-              <table className="w-full text-xs text-left">
-                <thead className="bg-slate-50 border-b font-bold sticky top-0">
-                  <tr>
-                    <th className="p-2.5">기사 성함</th>
-                    <th className="p-2.5">배정 차량</th>
-                    <th className="p-2.5">현재 코드</th>
-                    <th className="p-2.5">변환될 코드</th>
-                    <th className="p-2.5">상태</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {bulkPlan.map((row) => {
-                    const veh = vehicles.find(
-                      (v) => v.id === row.driver.assignedVehicleId
-                    );
-                    return (
-                      <tr
-                        key={row.driver.id}
-                        className={row.willChange ? 'bg-blue-50/40' : ''}
-                      >
-                        <td className="p-2.5 font-bold">{row.driver.name}</td>
-                        <td className="p-2.5 text-slate-600">
-                          {veh ? veh.plateNo : '미배정'}
-                        </td>
-                        <td className="p-2.5 font-mono text-slate-600">
-                          {row.currentCode}
-                        </td>
-                        <td className="p-2.5 font-mono font-black text-[#1E5EFF]">
-                          {row.nextCode}
-                        </td>
-                        <td className="p-2.5">
-                          <span
-                            className={`px-2 py-0.5 rounded-full font-bold ${
-                              row.willChange
-                                ? 'bg-blue-100 text-blue-700'
-                                : 'bg-slate-100 text-slate-500'
-                            }`}
-                          >
-                            {row.reason}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {bulkRunning && (
-              <div className="p-3 rounded-xl bg-blue-50 text-[#1E5EFF] font-bold text-xs">
-                코드 변환 진행 중... ({bulkProgress.done} / {bulkProgress.total})
-              </div>
-            )}
-            {bulkResultMsg && (
-              <div className="p-3 rounded-xl bg-emerald-50 text-emerald-800 font-bold text-xs whitespace-pre-line">
-                {bulkResultMsg}
-              </div>
-            )}
-
-            <div className="flex items-center justify-between gap-2 pt-2 border-t text-sm">
-              <div className="text-xs text-slate-500 font-semibold">
-                변경 예정: <b className="text-slate-900">{bulkChangeCount}명</b> (변경 시 비밀번호는 연락처 뒤 6자리 자동 설정)
-              </div>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  disabled={bulkRunning}
-                  onClick={() => setShowBulkModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 font-bold"
-                >
-                  닫기
-                </button>
-                <button
-                  type="button"
-                  disabled={bulkRunning || bulkChangeCount === 0}
-                  onClick={handleBulkConvertCodes}
-                  className="px-5 py-2 rounded-xl bg-[#1E5EFF] text-white font-bold disabled:opacity-50"
-                >
-                  {bulkRunning
-                    ? `변환 중 (${bulkProgress.done}/${bulkProgress.total})`
-                    : `${bulkChangeCount}명 일괄 변환 실행`}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
