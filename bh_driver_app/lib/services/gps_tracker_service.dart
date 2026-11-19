@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -19,6 +20,10 @@ class GpsTrackerService {
   static const _kTrackingDate = 'gps_tracker_date';
   static const _kTimelineList = 'gps_tracker_timeline_v2';
   static const _kLastCheckpointMeters = 'gps_tracker_last_chk_meters';
+
+  static const MethodChannel _nativeChannel = MethodChannel(
+    'com.bhlogistics.bh_driver_app/native_gps',
+  );
 
   // 5분 주기 기록 & 최대 300개 지점 (하루 24시간 이상 연속 운행 완벽 커버)
   static const int _kCheckpointIntervalMinutes = 5;
@@ -125,8 +130,19 @@ class GpsTrackerService {
         return;
       }
 
-      // 안드로이드: 상단 알림 전경 서비스(Foreground Service) + WakeLock으로 화면이 꺼져도 멈추지 않음
-      // 아이폰: 백그라운드 위치 업데이트 허용
+      // 안드로이드: 앱이 종료(스와이프·뒤로가기)돼도 유지되는 독립 네이티브 전경 서비스를 실행합니다.
+      if (Platform.isAndroid) {
+        await _nativeChannel.invokeMethod<bool>('startNativeGps', {
+          'workDate': workDate,
+          'initialLat': initialLat,
+          'initialLng': initialLng,
+          'initialAddress': initialAddress ?? '',
+          'reset': reset,
+        });
+        return;
+      }
+
+      // 안드로이드 외(아이폰): 백그라운드 위치 업데이트 허용
       final LocationSettings locationSettings;
       if (Platform.isAndroid) {
         locationSettings = AndroidSettings(
@@ -357,6 +373,14 @@ class GpsTrackerService {
     }
   }
 
+  /// 안드로이드에서 홈 화면 뒤로가기 시 앱 프로세스를 종료하지 않고 백그라운드로 보냅니다.
+  static Future<void> moveToBackground() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _nativeChannel.invokeMethod<bool>('moveTaskToBack');
+    } catch (_) {}
+  }
+
   /// 퇴근 완료 시 추적을 멈추고 (최종 GPS 주행거리 km, 이동 타임라인 배열)을 돌려준 뒤 초기화합니다.
   static Future<(int, List<Map<String, dynamic>>)> stopAndConsumeGpsSession({
     double? startLat,
@@ -371,6 +395,36 @@ class GpsTrackerService {
     _periodicTimer = null;
     await _sub?.cancel();
     _sub = null;
+
+    if (Platform.isAndroid) {
+      try {
+        final raw = await _nativeChannel.invokeMethod<Map<Object?, Object?>>(
+          'stopAndConsumeNativeGps',
+        );
+        if (raw != null) {
+          final nativeAccum = (raw['accumMeters'] as num?)?.toDouble();
+          if (nativeAccum != null && nativeAccum > _accumulatedMeters) {
+            _accumulatedMeters = nativeAccum;
+          }
+          final nativeLat = (raw['lastLat'] as num?)?.toDouble();
+          final nativeLng = (raw['lastLng'] as num?)?.toDouble();
+          if (nativeLat != null && nativeLng != null) {
+            _lastLat = nativeLat;
+            _lastLng = nativeLng;
+          }
+          final nativeTimelineJson = raw['timelineJson'] as String?;
+          if (nativeTimelineJson != null && nativeTimelineJson.isNotEmpty) {
+            final decoded = jsonDecode(nativeTimelineJson) as List<dynamic>;
+            final nativeTimeline = decoded
+                .map((e) => Map<String, dynamic>.from(e as Map))
+                .toList();
+            if (nativeTimeline.isNotEmpty) {
+              _timeline = nativeTimeline;
+            }
+          }
+        }
+      } catch (_) {}
+    }
 
     final prefs = await SharedPreferences.getInstance();
 

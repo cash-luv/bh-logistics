@@ -17,7 +17,7 @@ class AppUpdateService {
   AppUpdateService._();
 
   /// 현재 이 앱의 버전 (실행 시 PackageInfo.fromPlatform()으로 pubspec.yaml 버전을 자동 로드)
-  static String currentVersion = '1.0.7';
+  static String currentVersion = '1.0.8';
 
   /// 기본 APK 다운로드 주소 (Firebase Hosting에 올린 bh-driver.apk)
   static const String defaultApkUrl =

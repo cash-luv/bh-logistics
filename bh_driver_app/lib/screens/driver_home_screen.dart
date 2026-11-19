@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/driver_home_info.dart';
+import '../services/gps_tracker_service.dart';
 import '../theme/app_theme.dart';
 import 'app_version_label.dart';
 
@@ -51,8 +52,15 @@ class DriverHomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          GpsTrackerService.moveToBackground();
+        }
+      },
+      child: Scaffold(
+        body: SafeArea(
         // 글자 크기를 키운 폰에서도 깨지지 않게: 부족하면 스크롤, 남으면 버튼이 늘어남
         child: LayoutBuilder(
           builder: (context, constraints) => SingleChildScrollView(
@@ -115,6 +123,7 @@ class DriverHomeScreen extends StatelessWidget {
             ),
           ),
         ),
+      ),
       ),
     );
   }
