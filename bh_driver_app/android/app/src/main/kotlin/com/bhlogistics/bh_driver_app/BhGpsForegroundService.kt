@@ -18,6 +18,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import androidx.core.app.NotificationCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -138,10 +139,12 @@ class BhGpsForegroundService : Service(), LocationListener {
             if (manager.getNotificationChannel(NOTIFICATION_CHANNEL_ID) == null) {
                 val channel = NotificationChannel(
                     NOTIFICATION_CHANNEL_ID,
-                    "운행 중 GPS 동선 기록",
-                    NotificationManager.IMPORTANCE_LOW
+                    "BH 기사앱 운행 상태",
+                    NotificationManager.IMPORTANCE_DEFAULT
                 ).apply {
-                    description = "출근 후 퇴근 전까지 백그라운드에서 5분 단위로 운행 동선을 기록합니다."
+                    description = "운행 중 상단 알림 표시"
+                    setSound(null, null)
+                    enableVibration(false)
                     setShowBadge(false)
                 }
                 manager.createNotificationChannel(channel)
@@ -162,18 +165,20 @@ class BhGpsForegroundService : Service(), LocationListener {
             PendingIntent.getActivity(this, 0, it, pendingFlags)
         }
 
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+        val smallIcon = if (applicationInfo.icon != 0) {
+            applicationInfo.icon
         } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
+            android.R.drawable.ic_menu_mylocation
         }
 
-        builder
-            .setContentTitle("BH 기사앱 운행 중 (백그라운드 GPS 작동 중)")
+        val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("BH 기사앱 운행 중")
             .setContentText(text)
-            .setSmallIcon(applicationInfo.icon)
+            .setSmallIcon(smallIcon)
             .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setOnlyAlertOnce(true)
 
         if (contentIntent != null) {
             builder.setContentIntent(contentIntent)
@@ -411,7 +416,7 @@ class BhGpsForegroundService : Service(), LocationListener {
                 .putString(KEY_TIMELINE_JSON, timeline.toString())
                 .apply()
 
-            updatedSummaryText = "누적 GPS 이동: ${cumKm}km ($currentHm 기준 · 앱을 닫아도 계속 기록)"
+            updatedSummaryText = "오늘도 안전 운행하세요."
         }
 
         updatedSummaryText?.let { text ->
@@ -476,7 +481,7 @@ class BhGpsForegroundService : Service(), LocationListener {
         private const val KEY_TIMELINE_JSON = "timeline_json"
         private const val KEY_IS_ACTIVE = "is_active"
 
-        private const val NOTIFICATION_CHANNEL_ID = "bh_gps_tracking_channel"
+        private const val NOTIFICATION_CHANNEL_ID = "bh_gps_running_channel_v2"
         private const val NOTIFICATION_ID = 88415
         private const val WAKELOCK_TAG = "BhGpsService::WakeLock"
 
@@ -509,15 +514,8 @@ class BhGpsForegroundService : Service(), LocationListener {
             return fmt.format(Date())
         }
 
-        private fun buildStatusText(context: Context): String {
-            val accumMeters = prefs(context).getString(KEY_ACCUM_METERS, "0.0")?.toDoubleOrNull() ?: 0.0
-            return if (accumMeters >= 100.0) {
-                val cumKm = (accumMeters / 1000.0).roundToInt().coerceIn(1, 99999)
-                "누적 GPS 이동: ${cumKm}km · 앱을 닫아도 퇴근 전까지 계속 기록합니다."
-            } else {
-                "앱을 닫아도 퇴근 전까지 5분 주기로 동선을 기록합니다."
-            }
-        }
+        private fun buildStatusText(context: Context): String =
+            "오늘도 안전 운행하세요."
 
         private fun initializeOrRestoreState(
             context: Context,

@@ -14,6 +14,7 @@ import 'screens/check_out_screen.dart';
 import 'screens/driver_home_screen.dart';
 import 'screens/fuel_log_screen.dart';
 import 'screens/login_screen.dart';
+import 'screens/required_permission_screen.dart';
 import 'services/app_update_service.dart';
 import 'services/auth_service.dart';
 import 'services/draft_storage.dart';
@@ -167,6 +168,37 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
   bool _isLoading = true;
   bool _showInitialPasswordPrompt = false;
   int _pendingPhotoCount = 0;
+  Map<String, bool>? _permStatus;
+
+  bool get _hasAllRequiredPermissions {
+    if (!Platform.isAndroid) return true;
+    final status = _permStatus;
+    if (status == null) return false;
+    return status['gpsEnabled'] == true &&
+        status['fineLocationGranted'] == true &&
+        status['batteryUnrestricted'] == true &&
+        status['notificationGranted'] == true;
+  }
+
+  Future<void> _refreshPermissions({bool promptUpdateIfUnlocked = false}) async {
+    if (!Platform.isAndroid) return;
+    final wasUnlocked = _hasAllRequiredPermissions;
+    final status = await GpsTrackerService.checkRequiredPermissions();
+    if (!mounted) return;
+    setState(() {
+      _permStatus = status;
+    });
+    if (_hasAllRequiredPermissions) {
+      if (_info?.status == WorkStatus.working) {
+        GpsTrackerService.startTrackingForToday(
+          FirestoreService.todayWorkDate(),
+        );
+      }
+      if (!wasUnlocked && promptUpdateIfUnlocked && !_showInitialPasswordPrompt) {
+        AppUpdateService.checkAndPromptUpdate(context);
+      }
+    }
+  }
 
   DriverHomeInfo? get _info => _cachedInfo;
   set _info(DriverHomeInfo? val) => _cachedInfo = val;
@@ -184,19 +216,14 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
     super.dispose();
   }
 
-  /// 앱이 다시 화면 앞으로 올라올 때마다 오프라인 사진 대기열을 자동으로 업로드합니다.
+  /// 앱이 다시 화면 앞으로 올라올 때마다 오프라인 사진 대기열 및 필수 권한을 확인합니다.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _flushOfflinePhotos();
-      // 운행 중이면 위치 기록이 끊기지 않았는지 확인하고 이어서 기록합니다.
-      if (_info?.status == WorkStatus.working) {
-        GpsTrackerService.startTrackingForToday(
-          FirestoreService.todayWorkDate(),
-        );
-      }
+      _refreshPermissions(promptUpdateIfUnlocked: true);
       // 앱으로 돌아올 때마다 새 버전이 있는지 확인합니다.
-      if (!_showInitialPasswordPrompt && mounted) {
+      if (_hasAllRequiredPermissions && !_showInitialPasswordPrompt && mounted) {
         AppUpdateService.checkAndPromptUpdate(context);
       }
     }
@@ -211,6 +238,9 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
   }
 
   Future<void> _initProfileAndRestoreCamera() async {
+    final perms = await GpsTrackerService.checkRequiredPermissions();
+    _permStatus = perms;
+
     if (_cachedUid != widget.uid || _cachedInfo == null) {
       try {
         final (session, baseInfo) =
@@ -241,11 +271,14 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
     // 시작 시 대기 중인 오프라인 사진 자동 업로드 시도
     _flushOfflinePhotos();
 
+    if (_hasAllRequiredPermissions && _info?.status == WorkStatus.working) {
+      GpsTrackerService.startTrackingForToday(FirestoreService.todayWorkDate());
+    }
+
     if (!_showInitialPasswordPrompt) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _restoreCameraSessionIfNeeded();
-        GpsTrackerService.ensureBatteryUnrestricted();
-        if (mounted) {
+        if (mounted && _hasAllRequiredPermissions) {
           AppUpdateService.checkAndPromptUpdate(context);
         }
       });
@@ -388,6 +421,13 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
             _showInitialPasswordPrompt = false;
           });
         },
+      );
+    }
+
+    if (!_hasAllRequiredPermissions) {
+      return RequiredPermissionScreen(
+        status: _permStatus ?? const {},
+        onRecheck: () => _refreshPermissions(promptUpdateIfUnlocked: true),
       );
     }
 

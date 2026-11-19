@@ -150,8 +150,8 @@ class GpsTrackerService {
           distanceFilter: 30, // 30m 이동 시 GPS 업데이트
           intervalDuration: const Duration(seconds: 20),
           foregroundNotificationConfig: const ForegroundNotificationConfig(
-            notificationTitle: 'BH 기사앱 운행 중 (5분 주기 동선 기록)',
-            notificationText: '정밀한 이동 거리와 물류 타임라인을 안전하게 기록하고 있습니다.',
+            notificationTitle: 'BH 기사앱 운행 중',
+            notificationText: '오늘도 안전 운행하세요.',
             enableWakeLock: true,
             setOngoing: true,
           ),
@@ -373,12 +373,71 @@ class GpsTrackerService {
     }
   }
 
-  /// 안드로이드에서 배터리 사용량 '제한 없음' 원터치 허용 및 알림 권한을 요청합니다.
-  static Future<void> ensureBatteryUnrestricted() async {
+  /// 안드로이드 필수 권한 4가지 상태 확인
+  static Future<Map<String, bool>> checkRequiredPermissions() async {
+    if (!Platform.isAndroid) {
+      return const {
+        'gpsEnabled': true,
+        'fineLocationGranted': true,
+        'batteryUnrestricted': true,
+        'notificationGranted': true,
+      };
+    }
+    try {
+      final raw = await _nativeChannel.invokeMethod<Map<Object?, Object?>>(
+        'checkRequiredPermissions',
+      );
+      return {
+        'gpsEnabled': raw?['gpsEnabled'] == true,
+        'fineLocationGranted': raw?['fineLocationGranted'] == true,
+        'batteryUnrestricted': raw?['batteryUnrestricted'] == true,
+        'notificationGranted': raw?['notificationGranted'] == true,
+      };
+    } catch (_) {
+      return const {
+        'gpsEnabled': false,
+        'fineLocationGranted': false,
+        'batteryUnrestricted': false,
+        'notificationGranted': false,
+      };
+    }
+  }
+
+  /// 휴대폰 위치(GPS) 설정 화면 열기
+  static Future<void> openLocationSettings() async {
     if (!Platform.isAndroid) return;
     try {
-      await _nativeChannel.invokeMethod<bool>('requestBatteryExemption');
+      await _nativeChannel.invokeMethod<bool>('openLocationSettings');
     } catch (_) {}
+  }
+
+  /// '정확한 위치' 권한 요청 (필요 시 앱 권한 설정으로 이동)
+  static Future<void> requestFineLocation() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _nativeChannel.invokeMethod<bool>('requestFineLocation');
+    } catch (_) {}
+  }
+
+  /// 배터리 '제한 없음' 설정 요청
+  static Future<void> requestBatteryUnrestricted() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _nativeChannel.invokeMethod<bool>('requestBatteryUnrestricted');
+    } catch (_) {}
+  }
+
+  /// 알림 권한 요청 (필요 시 앱 알림 설정으로 이동)
+  static Future<void> requestNotificationPermission() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _nativeChannel.invokeMethod<bool>('requestNotificationPermission');
+    } catch (_) {}
+  }
+
+  /// 안드로이드에서 배터리 사용량 '제한 없음' 원터치 허용 및 알림 권한을 요청합니다.
+  static Future<void> ensureBatteryUnrestricted() async {
+    await requestBatteryUnrestricted();
   }
 
   /// 안드로이드에서 홈 화면 뒤로가기 시 앱 프로세스를 종료하지 않고 백그라운드로 보냅니다.
