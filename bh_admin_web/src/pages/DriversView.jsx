@@ -56,7 +56,7 @@ export default function DriversView() {
   const [msg, setMsg] = useState('');
 
   // 기사앱 버전 배포 알림 설정 상태 (Settings/appVersion)
-  const [latestAppVersion, setLatestAppVersion] = useState('1.0.6');
+  const [latestAppVersion, setLatestAppVersion] = useState('1.0.7');
   const [apkUrl, setApkUrl] = useState(
     'https://bh-logistics-f45d8.web.app/bh-driver.apk'
   );

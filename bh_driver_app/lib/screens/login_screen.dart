@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import '../services/auth_service.dart';
 import '../services/draft_storage.dart';
 import '../theme/app_theme.dart';
+import 'app_version_label.dart';
 
 /// 기사용 로그인 화면
 /// - 관리자가 부여한 기사 ID 코드(예: bh01) + 6자리 비밀번호(초기: 생년월일 6자리)
@@ -259,6 +260,8 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 24),
+                const AppVersionLabel(),
               ],
             ),
           ),

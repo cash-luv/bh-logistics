@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/driver_home_info.dart';
 import '../theme/app_theme.dart';
+import 'app_version_label.dart';
 
 /// 기사용 메인 화면: 큰 버튼 2개
 ///  - [출근 / 차량 점검] 파란색
@@ -106,6 +107,8 @@ class DriverHomeScreen extends StatelessWidget {
                           onTap: onFuelLog!,
                         ),
                       ],
+                      const SizedBox(height: 12),
+                      const AppVersionLabel(),
                     ],
                   ),
                 ),
