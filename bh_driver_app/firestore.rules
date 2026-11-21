@@ -121,7 +121,11 @@ service cloud.firestore {
       allow write: if isAdminOrAccounting();
     }
 
-    // 7. Settings 컬렉션: 앱 최신 버전(appVersion) 및 경유값(fuel) 설정. 모든 로그인 사용자가 읽을 수 있고 관리자/경리가 수정
+    // 7. Settings 컬렉션: 앱 최신 버전(appVersion) 및 경유값(fuel) 설정. AI 키(aiConfig)는 관리자/경리만 읽기 가능
+    match /Settings/aiConfig {
+      allow read, write: if isAdminOrAccounting();
+    }
+
     match /Settings/{settingId} {
       allow read: if isSignedIn();
       allow write: if isAdminOrAccounting();

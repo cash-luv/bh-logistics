@@ -7,6 +7,7 @@ import {
   getDoc,
   getDocs,
   setDoc,
+  deleteDoc,
   query,
   where,
   writeBatch,
@@ -34,9 +35,14 @@ import {
 } from '../utils/format';
 import {
   parseKakaoAndExcelDispatch,
+  applyClientAndCategoryToGroups,
   buildTripFromUnmatchedMilkrun,
   SAMPLE_KAKAO_DISPATCH_TEXT,
 } from '../utils/dispatchParser';
+import {
+  fileToImagePart,
+  analyzeDispatchWithAI,
+} from '../services/aiDispatchService';
 
 const CHART_COLORS = [
   '#1E5EFF',
@@ -127,15 +133,28 @@ function normalizeStop(s) {
 function makeEmptyTrip(tripNo = 1, defaults = {}) {
   const supply = Math.max(0, Number(defaults.supplyAmount) || 0);
   const vat = calcVat(supply);
+  const invoiceType =
+    defaults.invoiceType === 'bundled' ||
+    defaults.dispatchCategory === 'fixed_gansen'
+      ? defaults.invoiceType || 'bundled'
+      : 'per_trip';
+  const dispatchCategory =
+    defaults.dispatchCategory === 'fixed_gansen' ||
+    defaults.dispatchCategory === 'spot_charter'
+      ? defaults.dispatchCategory
+      : invoiceType === 'bundled'
+        ? 'fixed_gansen'
+        : 'spot_charter';
   return {
     tripNo,
+    dispatchCategory,
     clientName: defaults.clientName || '',
     bizNo: defaults.bizNo || '',
     courseName: defaults.courseName || '',
     supplyAmount: supply,
     vatAmount: vat,
     totalAmount: supply + vat,
-    invoiceType: defaults.invoiceType === 'bundled' ? 'bundled' : 'per_trip',
+    invoiceType,
     invoiceStatus: defaults.invoiceStatus || 'pending',
     invoiceIssuedAt: defaults.invoiceIssuedAt || '',
     invoiceMemo: defaults.invoiceMemo || '',
@@ -152,15 +171,24 @@ function makeEmptyTrip(tripNo = 1, defaults = {}) {
 function normalizeTrip(t, idx) {
   const supply = Math.max(0, Math.round(Number(t?.supplyAmount) || 0));
   const vat = calcVat(supply);
+  const invoiceType = t?.invoiceType === 'bundled' ? 'bundled' : 'per_trip';
+  const dispatchCategory =
+    t?.dispatchCategory === 'fixed_gansen' ||
+    t?.dispatchCategory === 'spot_charter'
+      ? t.dispatchCategory
+      : invoiceType === 'bundled'
+        ? 'fixed_gansen'
+        : 'spot_charter';
   return {
     tripNo: Number(t?.tripNo) || idx + 1,
+    dispatchCategory,
     clientName: String(t?.clientName || '').trim(),
     bizNo: String(t?.bizNo || '').trim(),
     courseName: String(t?.courseName || '').trim(),
     supplyAmount: supply,
     vatAmount: vat,
     totalAmount: supply + vat,
-    invoiceType: t?.invoiceType === 'bundled' ? 'bundled' : 'per_trip',
+    invoiceType,
     invoiceStatus: t?.invoiceStatus || 'pending',
     invoiceIssuedAt: t?.invoiceIssuedAt || '',
     invoiceMemo: t?.invoiceMemo || '',
@@ -172,6 +200,385 @@ function normalizeTrip(t, idx) {
     unloadTime: String(t?.unloadTime || '').trim(),
     stops: Array.isArray(t?.stops) ? t.stops.map(normalizeStop) : [],
   };
+}
+
+function TripCardEditor({
+  trip,
+  idx,
+  totalTrips,
+  onUpdateTrip,
+  onDeleteTrip,
+  stopsExpanded,
+  onToggleStops,
+  showBizNo = false,
+}) {
+  const stops = Array.isArray(trip.stops) ? trip.stops : [];
+  const isFixedGansen =
+    trip.dispatchCategory === 'fixed_gansen' ||
+    (trip.dispatchCategory !== 'spot_charter' && trip.invoiceType === 'bundled');
+
+  const updateField = (patch) => {
+    onUpdateTrip({ ...trip, ...patch });
+  };
+
+  const updateStopField = (sIdx, patch) => {
+    const nextStops = stops.map((st, i) => (i === sIdx ? { ...st, ...patch } : st));
+    updateField({ stops: nextStops });
+  };
+
+  const handleAddStop = () => {
+    updateField({
+      stops: [
+        ...stops,
+        {
+          stopType: stops.length === 0 ? '상차' : '하차',
+          time: '',
+          placeName: '',
+          address: '',
+          addressNote: '',
+          contactName: '',
+          contactPhone: '',
+          tempBadge: '',
+          palletBadge: '',
+        },
+      ],
+    });
+    if (!stopsExpanded && onToggleStops) onToggleStops();
+  };
+
+  const handleDeleteStop = (sIdx) => {
+    updateField({ stops: stops.filter((_, i) => i !== sIdx) });
+  };
+
+  return (
+    <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-2.5 text-xs shadow-sm">
+      {/* 상단 바: 코스 번호 + 고정간선/외부용차 전환 + 경유지 편집 + 코스 삭제 */}
+      <div className="flex flex-wrap items-center justify-between gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="px-2 py-0.5 rounded-full bg-slate-900 text-white text-[11px] font-black">
+            {idx + 1}코스
+          </span>
+          {trip.dispatchTag && (
+            <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold">
+              {trip.dispatchTag}
+            </span>
+          )}
+          <div className="inline-flex rounded-lg bg-slate-100 p-0.5 text-[10px] font-bold">
+            <button
+              type="button"
+              onClick={() =>
+                updateField({
+                  dispatchCategory: 'fixed_gansen',
+                  invoiceType: 'bundled',
+                })
+              }
+              className={`px-2 py-0.5 rounded-md transition ${
+                isFixedGansen
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              🏢 고정간선 묶음
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                updateField({
+                  dispatchCategory: 'spot_charter',
+                  invoiceType: 'per_trip',
+                })
+              }
+              className={`px-2 py-0.5 rounded-md transition ${
+                !isFixedGansen
+                  ? 'bg-[#1E5EFF] text-white shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              🚛 외부용차 1장
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onToggleStops}
+            className={`px-2 py-0.5 rounded-lg border font-bold text-[11px] ${
+              stopsExpanded
+                ? 'bg-slate-800 text-white border-slate-800'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            {stopsExpanded
+              ? '▲ 경유지 닫기'
+              : `✎ 경유지 (${stops.length})`}
+          </button>
+          {totalTrips > 1 && onDeleteTrip && (
+            <button
+              type="button"
+              onClick={onDeleteTrip}
+              className="px-2 py-0.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 font-bold text-[11px]"
+            >
+              🗑️ 코스 삭제
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 1행: 운행 코스 · 상차 시간 · 하차 시간 */}
+      <div className="grid grid-cols-12 gap-1.5">
+        <div className="col-span-12 sm:col-span-6">
+          <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+            운행 코스 (상·하차 구간)
+          </label>
+          <input
+            placeholder="예: 청주·증평 → 용인"
+            value={trip.courseName}
+            onChange={(e) => updateField({ courseName: e.target.value })}
+            className="w-full px-2.5 py-1.5 border rounded-lg font-bold text-slate-900"
+          />
+        </div>
+        <div className="col-span-6 sm:col-span-3">
+          <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+            상차 시간
+          </label>
+          <input
+            placeholder="예: 09:00"
+            value={trip.loadTime}
+            onChange={(e) => updateField({ loadTime: e.target.value })}
+            className="w-full px-2.5 py-1.5 border rounded-lg font-semibold"
+          />
+        </div>
+        <div className="col-span-6 sm:col-span-3">
+          <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+            하차 시간
+          </label>
+          <input
+            placeholder="예: 11:30"
+            value={trip.unloadTime}
+            onChange={(e) => updateField({ unloadTime: e.target.value })}
+            className="w-full px-2.5 py-1.5 border rounded-lg font-semibold"
+          />
+        </div>
+      </div>
+
+      {/* 2행: 청구 거래처명 · 공급가액 · 계산서 발행방식 */}
+      <div className="grid grid-cols-12 gap-1.5 items-end">
+        <div className={showBizNo ? 'col-span-12 sm:col-span-4' : 'col-span-12 sm:col-span-5'}>
+          <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+            청구 거래처 (원청/용차업체)
+          </label>
+          <input
+            list="bh-contractor-datalist"
+            placeholder="거래처명"
+            value={trip.clientName}
+            onChange={(e) => updateField({ clientName: e.target.value })}
+            className="w-full px-2.5 py-1.5 border rounded-lg font-bold"
+          />
+        </div>
+        <div className="col-span-6 sm:col-span-4">
+          <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+            공급가액 (VAT별도 · 원)
+          </label>
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="공급가액"
+            value={formatNumberWithCommas(trip.supplyAmount)}
+            onChange={(e) => {
+              const supply = parseNumberWithoutCommas(e.target.value);
+              const vat = calcVat(supply);
+              updateField({
+                supplyAmount: supply,
+                vatAmount: vat,
+                totalAmount: supply + vat,
+              });
+            }}
+            className="w-full px-2.5 py-1.5 border rounded-lg text-right font-black text-[#1E5EFF]"
+          />
+        </div>
+        <div className={showBizNo ? 'col-span-6 sm:col-span-2' : 'col-span-6 sm:col-span-3'}>
+          <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+            계산서 방식
+          </label>
+          <select
+            value={trip.invoiceType}
+            onChange={(e) => {
+              const val = e.target.value;
+              updateField({
+                invoiceType: val,
+                dispatchCategory:
+                  val === 'bundled' ? 'fixed_gansen' : 'spot_charter',
+              });
+            }}
+            className="w-full px-1.5 py-1.5 border rounded-lg font-bold bg-white"
+          >
+            <option value="bundled">묶음 합산</option>
+            <option value="per_trip">건별 1장</option>
+          </select>
+        </div>
+        {showBizNo && (
+          <div className="col-span-12 sm:col-span-2">
+            <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
+              사업자번호(선택)
+            </label>
+            <input
+              placeholder="000-00-00000"
+              value={trip.bizNo}
+              onChange={(e) => updateField({ bizNo: e.target.value })}
+              className="w-full px-2 py-1.5 border rounded-lg"
+            />
+          </div>
+        )}
+      </div>
+
+      {/* 3행: 경유지 미리보기 or 편집기 */}
+      {!stopsExpanded && stops.length > 0 && (
+        <div className="bg-slate-50 rounded-lg p-2 space-y-1 text-[11px] text-slate-600">
+          {stops.map((st, sIdx) => (
+            <div key={sIdx}>
+              <b
+                className={
+                  st.stopType === '상차' ? 'text-blue-700' : 'text-teal-700'
+                }
+              >
+                [{st.stopType} {st.time}]
+              </b>{' '}
+              <b className="text-slate-800">{st.placeName}</b>
+              {st.tempBadge && ` · ${st.tempBadge}`}
+              {st.palletBadge && ` · ${st.palletBadge}`}
+              {st.address && (
+                <div className="text-slate-500 pl-2">
+                  📍 {st.address}
+                  {st.addressNote ? ` (${st.addressNote})` : ''}
+                  {st.contactPhone
+                    ? ` · 👤 ${st.contactName} ${st.contactPhone}`
+                    : ''}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {stopsExpanded && (
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-black text-slate-700">
+              상·하차지 상세 편집 (기사앱 노선표에 그대로 표시됨)
+            </span>
+            <button
+              type="button"
+              onClick={handleAddStop}
+              className="px-2 py-0.5 rounded-lg bg-blue-50 text-[#1E5EFF] hover:bg-blue-100 text-[11px] font-bold"
+            >
+              + 경유지 추가
+            </button>
+          </div>
+          {stops.length === 0 ? (
+            <div className="text-[11px] text-slate-400 py-2 text-center">
+              등록된 경유지가 없습니다. [+ 경유지 추가]를 눌러 상·하차지 주소/연락처를 넣을 수 있습니다.
+            </div>
+          ) : (
+            stops.map((st, sIdx) => (
+              <div
+                key={sIdx}
+                className="p-2 rounded-lg bg-white border border-slate-200 space-y-1.5 text-[11px]"
+              >
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <select
+                    value={st.stopType}
+                    onChange={(e) =>
+                      updateStopField(sIdx, { stopType: e.target.value })
+                    }
+                    className="px-1.5 py-1 border rounded font-bold bg-white"
+                  >
+                    <option value="상차">상차</option>
+                    <option value="하차">하차</option>
+                  </select>
+                  <input
+                    placeholder="시간(09:00)"
+                    value={st.time}
+                    onChange={(e) =>
+                      updateStopField(sIdx, { time: e.target.value })
+                    }
+                    className="w-20 px-2 py-1 border rounded font-semibold"
+                  />
+                  <input
+                    placeholder="업체/센터명 (예: 용인3센터)"
+                    value={st.placeName}
+                    onChange={(e) =>
+                      updateStopField(sIdx, { placeName: e.target.value })
+                    }
+                    className="flex-1 min-w-[120px] px-2 py-1 border rounded font-bold"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteStop(sIdx)}
+                    className="px-2 py-1 rounded bg-red-50 text-red-600 font-bold"
+                  >
+                    삭제
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                  <input
+                    placeholder="주소 (기사님이 원터치 복사하는 주소)"
+                    value={st.address}
+                    onChange={(e) =>
+                      updateStopField(sIdx, { address: e.target.value })
+                    }
+                    className="px-2 py-1 border rounded"
+                  />
+                  <input
+                    placeholder="진입/층 안내 (예: 지하 1층)"
+                    value={st.addressNote}
+                    onChange={(e) =>
+                      updateStopField(sIdx, { addressNote: e.target.value })
+                    }
+                    className="px-2 py-1 border rounded"
+                  />
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  <input
+                    placeholder="담당자명"
+                    value={st.contactName}
+                    onChange={(e) =>
+                      updateStopField(sIdx, { contactName: e.target.value })
+                    }
+                    className="px-2 py-1 border rounded"
+                  />
+                  <input
+                    placeholder="담당자 연락처"
+                    value={st.contactPhone}
+                    onChange={(e) =>
+                      updateStopField(sIdx, { contactPhone: e.target.value })
+                    }
+                    className="px-2 py-1 border rounded"
+                  />
+                  <input
+                    placeholder="온도 (예: 냉장 1도)"
+                    value={st.tempBadge}
+                    onChange={(e) =>
+                      updateStopField(sIdx, { tempBadge: e.target.value })
+                    }
+                    className="px-2 py-1 border rounded"
+                  />
+                  <input
+                    placeholder="파렛트 (예: 5파렛)"
+                    value={st.palletBadge}
+                    onChange={(e) =>
+                      updateStopField(sIdx, { palletBadge: e.target.value })
+                    }
+                    className="px-2 py-1 border rounded"
+                  />
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ============================================================================
@@ -218,6 +625,15 @@ export default function SettlementsView({
   const [pasteUnmatchedMilkruns, setPasteUnmatchedMilkruns] = useState([]);
   const [pasteMergeMode, setPasteMergeMode] = useState(true);
   const [savingPaste, setSavingPaste] = useState(false);
+  const [pasteCategory, setPasteCategory] = useState('fixed_gansen');
+  const [pasteContractor, setPasteContractor] = useState('고정 간선 원청');
+  const [pasteImages, setPasteImages] = useState([]);
+  const [aiAnalyzing, setAiAnalyzing] = useState(false);
+  const [aiStatusMsg, setAiStatusMsg] = useState('');
+  const [aiApiKey, setAiApiKey] = useState('');
+  const [showAiKeyBox, setShowAiKeyBox] = useState(false);
+  const [savingAiKey, setSavingAiKey] = useState(false);
+  const [expandedStopKeys, setExpandedStopKeys] = useState({});
 
   // 기사별 급여 정산 입력 편집 상태
   const [payrollEdits, setPayrollEdits] = useState({});
@@ -234,7 +650,7 @@ export default function SettlementsView({
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [lSnap, rSnap, uSnap, vSnap, mSnap, sSnap, cfgSnap] =
+      const [lSnap, rSnap, uSnap, vSnap, mSnap, sSnap, cfgSnap, aiCfgSnap] =
         await Promise.all([
           getDocs(
             query(collection(db, 'DailyLogs'), where('yearMonth', '==', yearMonth))
@@ -250,6 +666,7 @@ export default function SettlementsView({
             )
           ),
           getDoc(doc(db, 'Settings', 'fuel')),
+          getDoc(doc(db, 'Settings', 'aiConfig')).catch(() => null),
         ]);
 
       const routeList = rSnap.docs
@@ -267,6 +684,9 @@ export default function SettlementsView({
 
       if (cfgSnap.exists() && cfgSnap.data()?.dieselPricePerL) {
         setDieselPrice(Number(cfgSnap.data().dieselPricePerL) || 1550);
+      }
+      if (aiCfgSnap?.exists?.() && aiCfgSnap.data()?.geminiApiKey) {
+        setAiApiKey(String(aiCfgSnap.data().geminiApiKey).trim());
       }
     } finally {
       setLoading(false);
@@ -839,6 +1259,59 @@ export default function SettlementsView({
     await loadAll();
   };
 
+  const contractorSuggestions = useMemo(() => {
+    const names = new Set(['고정 간선 원청']);
+    routes.forEach((r) => {
+      if (r?.clientName && String(r.clientName).trim()) {
+        names.add(String(r.clientName).trim());
+      }
+    });
+    return Array.from(names);
+  }, [routes]);
+
+  const toggleStopEditor = (key) => {
+    setExpandedStopKeys((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  // 이날 배차(코스·경유지) 전체 삭제
+  const handleDeleteRecordDispatch = async ({
+    workDate,
+    driverId,
+    driverName,
+  }) => {
+    if (!workDate || !driverId) return;
+    const ok = window.confirm(
+      `[${workDate}] ${driverName || '기사'}님의 이날 배차(전체 코스·경유지)를 삭제할까요?\n\n※ 테스트 배차를 정리하거나 잘못 올린 배차를 지울 때 사용합니다.`
+    );
+    if (!ok) return;
+    setSavingDispatch(true);
+    try {
+      const recordKey = `${workDate}_${driverId}`;
+      const dispRef = doc(db, 'Settlements', `dispatch_${recordKey}`);
+      const logRef = doc(db, 'DailyLogs', recordKey);
+      const logSnap = await getDoc(logRef);
+      if (logSnap.exists()) {
+        const batch = writeBatch(db);
+        batch.delete(dispRef);
+        batch.set(
+          logRef,
+          { trips: [], routePrice: 0, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+        await batch.commit();
+      } else {
+        await deleteDoc(dispRef);
+      }
+      setDispatchModal(false);
+      await loadAll();
+      alert(`[${workDate}] ${driverName || ''}님 배차가 삭제되었습니다.`);
+    } catch (err) {
+      alert('배차 삭제 중 오류가 발생했습니다: ' + (err?.message || err));
+    } finally {
+      setSavingDispatch(false);
+    }
+  };
+
   // 배차 등록/수정 모달 열기
   const openDispatchModal = ({ workDate, driverId, trips } = {}) => {
     const dateVal = workDate || todayKstStr();
@@ -848,6 +1321,7 @@ export default function SettlementsView({
     );
     setDispWorkDate(dateVal);
     setDispDriverId(drvId);
+    setExpandedStopKeys({});
     if (Array.isArray(trips) && trips.length > 0) {
       setDispTrips(trips.map(normalizeTrip));
     } else if (existingRec && existingRec.trips.length > 0) {
@@ -912,9 +1386,9 @@ export default function SettlementsView({
     }
   };
 
-  // 카톡 · 엑셀 붙여넣기 실시간 파싱
+  // 카톡 · 엑셀 붙여넣기 실시간 파싱 (사진이 첨부되지 않았을 때만 자동 텍스트 파싱)
   useEffect(() => {
-    if (!pasteModal) return;
+    if (!pasteModal || pasteImages.length > 0) return;
     if (!pasteRawText.trim()) {
       setPasteGroups([]);
       setPasteUnmatchedMilkruns([]);
@@ -925,17 +1399,150 @@ export default function SettlementsView({
       defaultWorkDate: pasteDefaultDate || todayKstStr(),
       drivers: activeDrivers,
       vehicles,
+      defaultClientName: pasteContractor,
+      defaultDispatchCategory: pasteCategory,
     });
     setPasteGroups(res.groups);
     setPasteUnmatchedMilkruns(res.unmatchedMilkruns);
-  }, [pasteRawText, pasteDefaultDate, pasteModal, activeDrivers, vehicles]);
+  }, [
+    pasteRawText,
+    pasteDefaultDate,
+    pasteModal,
+    pasteImages.length,
+    pasteContractor,
+    pasteCategory,
+    activeDrivers,
+    vehicles,
+  ]);
 
   const openPasteModal = () => {
     setPasteDefaultDate(todayKstStr());
     setPasteRawText('');
     setPasteGroups([]);
     setPasteUnmatchedMilkruns([]);
+    setPasteImages([]);
+    setAiStatusMsg('');
+    setShowAiKeyBox(false);
+    setExpandedStopKeys({});
     setPasteModal(true);
+  };
+
+  const handlePasteCategoryChange = (nextCategory) => {
+    setPasteCategory(nextCategory);
+    setPasteGroups((prev) =>
+      applyClientAndCategoryToGroups(prev, {
+        clientName: pasteContractor,
+        dispatchCategory: nextCategory,
+      })
+    );
+  };
+
+  const handlePasteContractorChange = (nextContractor) => {
+    setPasteContractor(nextContractor);
+    setPasteGroups((prev) =>
+      applyClientAndCategoryToGroups(prev, {
+        clientName: nextContractor,
+        dispatchCategory: pasteCategory,
+      })
+    );
+  };
+
+  const handleAddPasteImageFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter(
+      (f) => f && f.type && f.type.startsWith('image/')
+    );
+    if (files.length === 0) return;
+    try {
+      const converted = await Promise.all(files.map((f) => fileToImagePart(f)));
+      setPasteImages((prev) => [...prev, ...converted].slice(0, 6));
+      setAiStatusMsg(
+        `사진 ${converted.length}장 첨부됨 · [🤖 AI로 사진 + 텍스트 비교 분석하기]를 누르세요.`
+      );
+    } catch (err) {
+      setAiStatusMsg('⚠️ 이미지 읽기 실패: ' + (err?.message || err));
+    }
+  };
+
+  const handleRemovePasteImage = (idx) => {
+    setPasteImages((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleClipboardPaste = (e) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imgFiles = items
+      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter(Boolean);
+    if (imgFiles.length > 0) {
+      e.preventDefault();
+      handleAddPasteImageFiles(imgFiles);
+    }
+  };
+
+  const handleRunAiAnalysis = async () => {
+    if (aiAnalyzing) return;
+    if (pasteImages.length === 0 && !pasteRawText.trim()) {
+      alert('사진을 올리거나 카톡·엑셀 글을 먼저 붙여넣어 주세요.');
+      return;
+    }
+    setAiAnalyzing(true);
+    setAiStatusMsg(
+      '🤖 AI가 첨부된 사진과 배차 글을 대조 분석해 기사별 1·2·3코스를 정리하고 있습니다...'
+    );
+    try {
+      const res = await analyzeDispatchWithAI({
+        images: pasteImages,
+        rawText: pasteRawText,
+        defaultWorkDate: pasteDefaultDate || todayKstStr(),
+        defaultClientName: pasteContractor,
+        defaultDispatchCategory: pasteCategory,
+        drivers: activeDrivers,
+        vehicles,
+        customApiKey: aiApiKey,
+      });
+      setPasteGroups(res.groups);
+      setPasteUnmatchedMilkruns([]);
+      setExpandedStopKeys({});
+      setAiStatusMsg(
+        `✅ AI 비교 분석 완료: ${res.groups.length}명 · 총 ${res.rawTripsCount}코스 정리됨 (오른쪽 미리보기에서 확인·수정 후 저장하세요)`
+      );
+    } catch (err) {
+      const msg = err?.message || 'AI 분석 중 오류가 발생했습니다.';
+      setAiStatusMsg(`⚠️ ${msg}`);
+      if (/API 키|AI Logic|시작하기|초기화/.test(msg)) {
+        setShowAiKeyBox(true);
+      }
+    } finally {
+      setAiAnalyzing(false);
+    }
+  };
+
+  const handleSaveAiApiKey = async () => {
+    if (savingAiKey) return;
+    setSavingAiKey(true);
+    try {
+      const trimmed = aiApiKey.trim();
+      await setDoc(
+        doc(db, 'Settings', 'aiConfig'),
+        {
+          geminiApiKey: trimmed,
+          updatedBy: adminUid,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      setAiApiKey(trimmed);
+      setAiStatusMsg(
+        trimmed
+          ? '✅ AI API 키가 안전하게 저장되었습니다. 이제 AI 분석 버튼을 눌러 보세요.'
+          : 'AI API 키가 비워졌습니다. (Firebase AI 기본 연결 사용)'
+      );
+      setShowAiKeyBox(false);
+    } catch (err) {
+      alert('AI 키 저장 오류: ' + (err?.message || err));
+    } finally {
+      setSavingAiKey(false);
+    }
   };
 
   const handleAssignUnmatchedMilkrun = (detail, driverId) => {
@@ -945,7 +1552,10 @@ export default function SettlementsView({
     const veh = drv.assignedVehicleId
       ? vehicleMap[drv.assignedVehicleId]
       : null;
-    const newTrip = buildTripFromUnmatchedMilkrun(detail);
+    const newTrip = buildTripFromUnmatchedMilkrun(detail, {
+      clientName: pasteContractor,
+      dispatchCategory: pasteCategory,
+    });
     const workDate = pasteDefaultDate || todayKstStr();
     const key = `${workDate}__${drv.id}`;
 
@@ -1725,10 +2335,10 @@ export default function SettlementsView({
               <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
                 <div className="p-4 border-b bg-indigo-50/60">
                   <h2 className="font-black text-slate-900">
-                    ② 고정 간선 거래처 묶음 발행 (거래처별 합산 1장)
+                    ② 고정 간선 원청 묶음 발행 (밀크런 + 센터간선 · 원청별 합산 1장)
                   </h2>
                   <p className="text-xs text-slate-600 mt-0.5">
-                    배차 등록 시 &apos;고정거래처 묶음&apos;으로 체크한 코스들이 거래처 이름별로 자동 합산됩니다.
+                    고정 간선 원청 1곳에서 받은 밀크런(1코스)과 센터간선(2·3코스)을 거래처 이름 기준으로 자동 합산합니다.
                   </p>
                 </div>
                 <div className="overflow-x-auto">
@@ -2115,7 +2725,7 @@ export default function SettlementsView({
                         <th className="p-3">출근 상태</th>
                         <th className="p-3">1~3코스 (거래처 · 운행코스 · 운임 · 계산서)</th>
                         <th className="p-3 text-right">일 공급가 합계</th>
-                        <th className="p-3">수정</th>
+                        <th className="p-3">수정 · 삭제</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
@@ -2181,6 +2791,21 @@ export default function SettlementsView({
                                       <div>
                                         <span className="font-black text-slate-800 mr-1.5">
                                           {t.tripNo}코스
+                                        </span>
+                                        <span
+                                          className={`mr-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                            t.dispatchCategory === 'fixed_gansen' ||
+                                            (t.dispatchCategory !== 'spot_charter' &&
+                                              t.invoiceType === 'bundled')
+                                              ? 'bg-indigo-100 text-indigo-800'
+                                              : 'bg-sky-100 text-sky-800'
+                                          }`}
+                                        >
+                                          {t.dispatchCategory === 'fixed_gansen' ||
+                                          (t.dispatchCategory !== 'spot_charter' &&
+                                            t.invoiceType === 'bundled')
+                                            ? '고정간선'
+                                            : '외부용차'}
                                         </span>
                                         {t.dispatchTag && (
                                           <span className="mr-1.5 px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-bold">
@@ -2262,18 +2887,35 @@ export default function SettlementsView({
                               {rec.totalSupply.toLocaleString()}원
                             </td>
                             <td className="p-3 whitespace-nowrap">
-                              <button
-                                onClick={() =>
-                                  openDispatchModal({
-                                    workDate: rec.workDate,
-                                    driverId: rec.driverId,
-                                    trips: rec.trips,
-                                  })
-                                }
-                                className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
-                              >
-                                코스·운임 수정
-                              </button>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    openDispatchModal({
+                                      workDate: rec.workDate,
+                                      driverId: rec.driverId,
+                                      trips: rec.trips,
+                                    })
+                                  }
+                                  className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
+                                >
+                                  코스·운임 수정
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={savingDispatch}
+                                  onClick={() =>
+                                    handleDeleteRecordDispatch({
+                                      workDate: rec.workDate,
+                                      driverId: rec.driverId,
+                                      driverName: rec.driverName,
+                                    })
+                                  }
+                                  className="px-2.5 py-1.5 rounded-lg bg-red-50 text-red-600 border border-red-200 text-xs font-bold hover:bg-red-100"
+                                >
+                                  🗑️ 삭제
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))
@@ -2807,6 +3449,12 @@ export default function SettlementsView({
         </>
       )}
 
+      <datalist id="bh-contractor-datalist">
+        {contractorSuggestions.map((name) => (
+          <option key={name} value={name} />
+        ))}
+      </datalist>
+
       {/* ====================================================================
           모달: 전날 카톡 배차 / 간선 다회차(1~3코스) 운임 등록 · 수정
       ===================================================================== */}
@@ -2817,15 +3465,15 @@ export default function SettlementsView({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto space-y-4 shadow-2xl"
+            className="bg-white rounded-2xl p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto space-y-4 shadow-2xl"
           >
             <div className="flex items-center justify-between border-b pb-3">
               <div>
                 <div className="text-xs font-bold text-[#1E5EFF]">
-                  카카오톡 단톡방 배차 · 다회차(1~3탕) 매출 등록
+                  카카오톡 단톡방 배차 · 다회차(1~3탕) 매출 등록 · 수정
                 </div>
                 <h2 className="text-xl font-black">
-                  간선 코스 · 운임 · 세금계산서 방식 등록
+                  간선 코스 · 운임 · 경유지 · 세금계산서 수정
                 </h2>
               </div>
               <button
@@ -2898,10 +3546,22 @@ export default function SettlementsView({
                   <button
                     type="button"
                     onClick={() =>
-                      setDispTrips((prev) => [
-                        ...prev,
-                        makeEmptyTrip(prev.length + 1),
-                      ])
+                      setDispTrips((prev) => {
+                        const first = prev[0] || {};
+                        return [
+                          ...prev,
+                          makeEmptyTrip(prev.length + 1, {
+                            clientName: first.clientName || '',
+                            dispatchCategory:
+                              first.dispatchCategory || 'spot_charter',
+                            invoiceType:
+                              first.dispatchCategory === 'fixed_gansen'
+                                ? 'bundled'
+                                : first.invoiceType || 'per_trip',
+                            bizNo: first.bizNo || '',
+                          }),
+                        ];
+                      })
                     }
                     className="px-3 py-1.5 rounded-xl bg-blue-50 text-[#1E5EFF] hover:bg-blue-100 font-bold text-xs"
                   >
@@ -2910,141 +3570,28 @@ export default function SettlementsView({
                 </div>
 
                 {dispTrips.map((trip, idx) => (
-                  <div
+                  <TripCardEditor
                     key={idx}
-                    className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-2.5"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="px-2.5 py-0.5 rounded-full bg-slate-900 text-white text-xs font-black">
-                        {idx + 1}코스
-                      </span>
-                      {dispTrips.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setDispTrips((prev) =>
-                              prev
-                                .filter((_, i) => i !== idx)
-                                .map((t, n) => ({ ...t, tripNo: n + 1 }))
-                            )
-                          }
-                          className="text-xs font-bold text-red-600 hover:underline"
-                        >
-                          코스 삭제
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-600 mb-1">
-                          거래처명
-                        </label>
-                        <input
-                          placeholder="예: 쿠팡 물류센터 또는 (주)OO물류"
-                          value={trip.clientName}
-                          onChange={(e) =>
-                            setDispTrips((prev) =>
-                              prev.map((t, i) =>
-                                i === idx ? { ...t, clientName: e.target.value } : t
-                              )
-                            )
-                          }
-                          className="w-full px-3 py-2 border rounded-xl bg-white text-xs font-bold"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-600 mb-1">
-                          운행 코스
-                        </label>
-                        <input
-                          placeholder="예: 대전 → 용인"
-                          value={trip.courseName}
-                          onChange={(e) =>
-                            setDispTrips((prev) =>
-                              prev.map((t, i) =>
-                                i === idx ? { ...t, courseName: e.target.value } : t
-                              )
-                            )
-                          }
-                          className="w-full px-3 py-2 border rounded-xl bg-white text-xs font-semibold"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-600 mb-1">
-                          공급가액 (VAT별도 · 원)
-                        </label>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          placeholder="예: 250,000"
-                          value={formatNumberWithCommas(trip.supplyAmount)}
-                          onChange={(e) => {
-                            const supply = parseNumberWithoutCommas(
-                              e.target.value
-                            );
-                            const vat = calcVat(supply);
-                            setDispTrips((prev) =>
-                              prev.map((t, i) =>
-                                i === idx
-                                  ? {
-                                      ...t,
-                                      supplyAmount: supply,
-                                      vatAmount: vat,
-                                      totalAmount: supply + vat,
-                                    }
-                                  : t
-                              )
-                            );
-                          }}
-                          className="w-full px-3 py-2 border rounded-xl bg-white text-right font-black text-[#1E5EFF]"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-600 mb-1">
-                          세금계산서 방식
-                        </label>
-                        <select
-                          value={trip.invoiceType}
-                          onChange={(e) =>
-                            setDispTrips((prev) =>
-                              prev.map((t, i) =>
-                                i === idx ? { ...t, invoiceType: e.target.value } : t
-                              )
-                            )
-                          }
-                          className="w-full px-2.5 py-2 border rounded-xl bg-white text-xs font-bold"
-                        >
-                          <option value="per_trip">
-                            운행 1건당 1장 (외부 용차/콜)
-                          </option>
-                          <option value="bundled">
-                            고정 거래처 묶음 합산 발행
-                          </option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-600 mb-1">
-                          사업자번호 (선택)
-                        </label>
-                        <input
-                          placeholder="000-00-00000"
-                          value={trip.bizNo}
-                          onChange={(e) =>
-                            setDispTrips((prev) =>
-                              prev.map((t, i) =>
-                                i === idx ? { ...t, bizNo: e.target.value } : t
-                              )
-                            )
-                          }
-                          className="w-full px-3 py-2 border rounded-xl bg-white text-xs"
-                        />
-                      </div>
-                    </div>
-                  </div>
+                    trip={trip}
+                    idx={idx}
+                    totalTrips={dispTrips.length}
+                    showBizNo
+                    stopsExpanded={Boolean(expandedStopKeys[`disp_${idx}`])}
+                    onToggleStops={() => toggleStopEditor(`disp_${idx}`)}
+                    onUpdateTrip={(nextTrip) =>
+                      setDispTrips((prev) =>
+                        prev.map((t, i) => (i === idx ? nextTrip : t))
+                      )
+                    }
+                    onDeleteTrip={() => {
+                      setDispTrips((prev) =>
+                        prev
+                          .filter((_, i) => i !== idx)
+                          .map((t, n) => ({ ...t, tripNo: n + 1 }))
+                      );
+                      setExpandedStopKeys({});
+                    }}
+                  />
                 ))}
               </div>
 
@@ -3067,29 +3614,55 @@ export default function SettlementsView({
                 </span>
               </div>
 
-              <div className="flex justify-end gap-2 pt-2 border-t">
-                <button
-                  type="button"
-                  disabled={savingDispatch}
-                  onClick={() => setDispatchModal(false)}
-                  className="px-4 py-2.5 rounded-xl bg-slate-100 font-bold"
-                >
-                  취소
-                </button>
-                <button
-                  type="submit"
-                  disabled={savingDispatch}
-                  className="px-5 py-2.5 rounded-xl bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold"
-                >
-                  {savingDispatch ? '저장 중...' : '배차 · 코스 운임 저장'}
-                </button>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t">
+                <div>
+                  {(dispatchMap[`${dispWorkDate}_${dispDriverId}`] ||
+                    logs.some(
+                      (l) =>
+                        l.id === `${dispWorkDate}_${dispDriverId}` &&
+                        Array.isArray(l.trips) &&
+                        l.trips.length > 0
+                    )) && (
+                    <button
+                      type="button"
+                      disabled={savingDispatch}
+                      onClick={() =>
+                        handleDeleteRecordDispatch({
+                          workDate: dispWorkDate,
+                          driverId: dispDriverId,
+                          driverName: userMap[dispDriverId]?.name || '',
+                        })
+                      }
+                      className="px-3.5 py-2.5 rounded-xl bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 font-bold text-xs"
+                    >
+                      🗑️ 이날 배차 전체 삭제
+                    </button>
+                  )}
+                </div>
+                <div className="flex gap-2 ml-auto">
+                  <button
+                    type="button"
+                    disabled={savingDispatch}
+                    onClick={() => setDispatchModal(false)}
+                    className="px-4 py-2.5 rounded-xl bg-slate-100 font-bold"
+                  >
+                    취소
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingDispatch}
+                    className="px-5 py-2.5 rounded-xl bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold"
+                  >
+                    {savingDispatch ? '저장 중...' : '배차 · 코스 운임 저장'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
         </div>
       )}
       {/* ====================================================================
-          모달 2: 카톡 단톡방 · 밀크런 상세 · 엑셀 배차표 붙여넣기 자동 등록
+          모달 2: 카톡 단톡방 · 밀크런 상세 · 엑셀 사진/텍스트 배차 자동 등록
       ===================================================================== */}
       {pasteModal && (
         <div
@@ -3098,15 +3671,15 @@ export default function SettlementsView({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl p-6 max-w-4xl w-full max-h-[92vh] flex flex-col space-y-4 shadow-2xl"
+            className="bg-white rounded-2xl p-6 max-w-5xl w-full max-h-[92vh] flex flex-col space-y-3.5 shadow-2xl"
           >
             <div className="flex items-center justify-between border-b pb-3">
               <div>
                 <div className="text-xs font-bold text-indigo-600">
-                  무료 자동 분석기 · 카톡 요약 + 밀크런 주소 + 엑셀 복사 일괄 인식
+                  AI 사진 비교 · 카톡 요약 · 밀크런 주소 · 엑셀 복사 일괄 인식
                 </div>
                 <h2 className="text-xl font-black text-slate-900">
-                  📋 카톡 · 엑셀 배차 붙여넣기 자동등록
+                  📋 카톡 · 엑셀 · 사진 배차 자동등록
                 </h2>
               </div>
               <button
@@ -3119,8 +3692,65 @@ export default function SettlementsView({
               </button>
             </div>
 
+            {/* 상단: 고정간선 원청 묶음 vs 외부용차 건별 1장 설정 바 */}
+            <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-1.5 text-xs">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-black text-slate-700 mr-1">
+                    배차 성격:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handlePasteCategoryChange('fixed_gansen')}
+                    className={`px-3 py-1.5 rounded-xl font-bold transition border ${
+                      pasteCategory === 'fixed_gansen'
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    🏢 고정 간선 (한 업체 묶음 발행)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePasteCategoryChange('spot_charter')}
+                    className={`px-3 py-1.5 rounded-xl font-bold transition border ${
+                      pasteCategory === 'spot_charter'
+                        ? 'bg-[#1E5EFF] text-white border-[#1E5EFF] shadow-sm'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    🚛 외부 용차 / 단발 콜 (건별 1장)
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-black text-slate-700">
+                    {pasteCategory === 'fixed_gansen'
+                      ? '청구 원청 거래처:'
+                      : '기본 거래처명:'}
+                  </span>
+                  <input
+                    list="bh-contractor-datalist"
+                    placeholder={
+                      pasteCategory === 'fixed_gansen'
+                        ? '예: (주)OOO물류 (1곳으로 묶임)'
+                        : '예: 외부 용차 / 화주명'
+                    }
+                    value={pasteContractor}
+                    onChange={(e) => handlePasteContractorChange(e.target.value)}
+                    className="px-3 py-1.5 border rounded-xl bg-white font-bold text-slate-900 min-w-[200px]"
+                  />
+                </div>
+              </div>
+              <div className="text-[11px] text-slate-500 font-semibold">
+                {pasteCategory === 'fixed_gansen'
+                  ? '💡 밀크런(1코스)과 센터간선(2·3코스)이 모두 위 청구 원청 거래처 1곳으로 묶음 합산됩니다. (용인3센터·에르코스 등은 기사앱 경유지로만 표시)'
+                  : '💡 고정 거래처가 아닌 단발성 콜·외부 용차로 분류되어 코스별로 세금계산서 1장씩 발행 대기함에 들어갑니다.'}
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1 min-h-0 overflow-y-auto pr-1">
-              {/* 왼쪽: 붙여넣기 입력 칸 */}
+              {/* 왼쪽: 날짜 + 사진 첨부/AI 분석 + 텍스트 붙여넣기 */}
               <div className="space-y-3 flex flex-col">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                   <div className="flex items-center gap-2">
@@ -3155,12 +3785,138 @@ export default function SettlementsView({
                   </button>
                 </div>
 
+                {/* AI 사진 업로드 / Ctrl+V 붙여넣기 박스 */}
+                <div
+                  onPaste={handleClipboardPaste}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    handleAddPasteImageFiles(e.dataTransfer?.files);
+                  }}
+                  className="p-3 rounded-xl border-2 border-dashed border-indigo-200 bg-indigo-50/40 space-y-2 text-xs"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="font-black text-indigo-900">
+                        📸 엑셀·밀크런 사진 첨부 (사진 복사 후 Ctrl+V 가능)
+                      </div>
+                      <div className="text-[11px] text-slate-600">
+                        캡처 사진과 아래 카톡 글을 함께 넣고 AI 분석을 누르면 서로 대조해 자동 정리합니다.
+                      </div>
+                    </div>
+                    <label className="px-3 py-1.5 rounded-xl bg-white border border-indigo-300 text-indigo-700 font-bold cursor-pointer hover:bg-indigo-50 shrink-0">
+                      🖼️ 사진 올리기
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => {
+                          handleAddPasteImageFiles(e.target.files);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  {pasteImages.length > 0 && (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {pasteImages.map((img, i) => (
+                        <div
+                          key={i}
+                          className="relative border rounded-lg overflow-hidden bg-white shadow-sm w-20 h-16"
+                        >
+                          <img
+                            src={img.previewUrl}
+                            alt={img.name}
+                            className="w-full h-full object-cover"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleRemovePasteImage(i)}
+                            title="사진 제거"
+                            className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-black/70 text-white text-[11px] font-black flex items-center justify-center hover:bg-red-600"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      disabled={
+                        aiAnalyzing ||
+                        (pasteImages.length === 0 && !pasteRawText.trim())
+                      }
+                      onClick={handleRunAiAnalysis}
+                      className="flex-1 min-w-[200px] px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-[#1E5EFF] hover:from-indigo-700 hover:to-blue-700 text-white font-black shadow-sm disabled:opacity-50"
+                    >
+                      {aiAnalyzing
+                        ? '🤖 AI가 사진과 글을 대조 분석하는 중...'
+                        : `🤖 AI로 사진(${pasteImages.length}장) + 텍스트 비교 분석하기`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowAiKeyBox((prev) => !prev)}
+                      className="px-2.5 py-2 rounded-xl bg-white border border-slate-200 text-slate-600 font-bold hover:bg-slate-100"
+                    >
+                      ⚙️ AI 키 설정
+                    </button>
+                  </div>
+
+                  {aiStatusMsg && (
+                    <div
+                      className={`p-2 rounded-lg text-[11px] font-bold ${
+                        aiStatusMsg.startsWith('⚠️')
+                          ? 'bg-red-50 text-red-700 border border-red-200'
+                          : aiStatusMsg.startsWith('✅')
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-white text-indigo-800 border border-indigo-200'
+                      }`}
+                    >
+                      {aiStatusMsg}
+                    </div>
+                  )}
+
+                  {showAiKeyBox && (
+                    <div className="p-2.5 rounded-xl bg-white border border-slate-200 space-y-2 text-[11px]">
+                      <div className="font-bold text-slate-800">
+                        Gemini API 키 설정 (선택 · 관리자/경리만 접근 가능)
+                      </div>
+                      <p className="text-slate-500">
+                        Firebase 콘솔 → AI Logic에서 [시작하기]를 눌렀으면 키 없이 바로 작동합니다. Google AI Studio 무료 API 키를 직접 쓰려면 아래에 입력해 저장하세요.
+                      </p>
+                      <div className="flex gap-1.5">
+                        <input
+                          type="password"
+                          placeholder="AIza... (비우고 저장하면 Firebase AI 기본 사용)"
+                          value={aiApiKey}
+                          onChange={(e) => setAiApiKey(e.target.value)}
+                          className="flex-1 px-2.5 py-1.5 border rounded-lg font-mono text-xs"
+                        />
+                        <button
+                          type="button"
+                          disabled={savingAiKey}
+                          onClick={handleSaveAiApiKey}
+                          className="px-3 py-1.5 rounded-lg bg-slate-900 text-white font-bold"
+                        >
+                          {savingAiKey ? '저장중...' : '키 저장'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <textarea
-                  rows={14}
-                  placeholder={`여기에 카카오톡 배차 글이나 엑셀 표를 복사(Ctrl+C)해서 그대로 붙여넣기(Ctrl+V) 하세요.\n\n예)\n6번 정태광님\n냉장7파렛 9시\n청주.증평 ㅡ 용인 17만\n11시30분하차/1도,10도\n\n> 밀크런 6번 / 냉장 총 7파렛 ...`}
+                  rows={10}
+                  onPaste={handleClipboardPaste}
+                  placeholder={`여기에 카카오톡 배차 글이나 엑셀 표를 복사(Ctrl+C)해서 붙여넣기(Ctrl+V) 하세요.\n(이미지를 복사한 상태로 여기에 Ctrl+V 해도 사진이 자동 첨부됩니다!)\n\n예)\n6번 정태광님\n냉장7파렛 9시\n청주.증평 ㅡ 용인 17만\n11시30분하차/1도,10도\n\n> 밀크런 6번 / 냉장 총 7파렛 ...`}
                   value={pasteRawText}
                   onChange={(e) => setPasteRawText(e.target.value)}
-                  className="w-full flex-1 min-h-[260px] p-3 border rounded-xl text-xs font-mono leading-relaxed bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  className="w-full flex-1 min-h-[190px] p-3 border rounded-xl text-xs font-mono leading-relaxed bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                 />
 
                 <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
@@ -3173,11 +3929,16 @@ export default function SettlementsView({
                 </label>
               </div>
 
-              {/* 오른쪽: 실시간 분석 미리보기 (수정 가능) */}
-              <div className="space-y-3 overflow-y-auto max-h-[520px]">
-                <div className="flex items-center justify-between">
+              {/* 오른쪽: 실시간/AI 분석 미리보기 (수정·삭제 가능) */}
+              <div className="space-y-3 overflow-y-auto max-h-[560px] pr-1">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="font-black text-sm text-slate-900">
-                    자동 분석 미리보기 ({pasteGroups.length}명)
+                    분석 결과 미리보기 ({pasteGroups.length}명)
+                    {pasteImages.length > 0 && (
+                      <span className="ml-2 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black">
+                        AI 비교 모드
+                      </span>
+                    )}
                   </div>
                   <span className="text-[11px] font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full">
                     금액은 관리자웹에만 저장됨 (기사앱 비공개)
@@ -3186,7 +3947,9 @@ export default function SettlementsView({
 
                 {pasteGroups.length === 0 && pasteUnmatchedMilkruns.length === 0 ? (
                   <div className="p-8 border rounded-2xl text-center text-xs text-slate-400 font-semibold">
-                    왼쪽 칸에 카톡 배차나 엑셀 내용을 붙여넣으면 기사별 1·2·3코스가 자동으로 정리됩니다.
+                    {pasteImages.length > 0
+                      ? '사진이 첨부되었습니다. 위 [🤖 AI로 사진 + 텍스트 비교 분석하기] 버튼을 눌러 주세요.'
+                      : '왼쪽 칸에 카톡 배차 글·엑셀 표 또는 사진을 넣으면 기사별 1·2·3코스가 자동으로 정리됩니다.'}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -3219,14 +3982,30 @@ export default function SettlementsView({
 
                     {pasteGroups.map((grp, gIdx) => (
                       <div
-                        key={grp.key}
+                        key={grp.key || gIdx}
                         className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-2.5"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            <span className="px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs font-black">
-                              {grp.workDate}
-                            </span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <input
+                              type="date"
+                              value={grp.workDate}
+                              onChange={(e) => {
+                                const nextDate = e.target.value;
+                                setPasteGroups((prev) =>
+                                  prev.map((g, i) =>
+                                    i === gIdx
+                                      ? {
+                                          ...g,
+                                          workDate: nextDate,
+                                          key: `${nextDate}__${g.driverId}`,
+                                        }
+                                      : g
+                                  )
+                                );
+                              }}
+                              className="px-2 py-0.5 rounded-lg border bg-white text-slate-900 text-xs font-black"
+                            />
                             {grp.isDriverMatched ? (
                               <span className="font-black text-slate-900 text-sm">
                                 {grp.driverName}{' '}
@@ -3250,6 +4029,7 @@ export default function SettlementsView({
                                         ? {
                                             ...g,
                                             driverId: drv.id,
+                                            key: `${g.workDate}__${drv.id}`,
                                             isDriverMatched: true,
                                             driverName: drv.name,
                                             plateNo: plate,
@@ -3273,149 +4053,105 @@ export default function SettlementsView({
                               </select>
                             )}
                           </div>
-                          <span className="text-xs font-black text-[#1E5EFF]">
-                            총 {grp.trips.length}코스 ·{' '}
-                            {grp.trips
-                              .reduce((s, t) => s + (Number(t.supplyAmount) || 0), 0)
-                              .toLocaleString()}
-                            원
-                          </span>
+
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-xs font-black text-[#1E5EFF] mr-1">
+                              총 {grp.trips.length}코스 ·{' '}
+                              {grp.trips
+                                .reduce(
+                                  (s, t) => s + (Number(t.supplyAmount) || 0),
+                                  0
+                                )
+                                .toLocaleString()}
+                              원
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPasteGroups((prev) =>
+                                  prev.map((g, i) =>
+                                    i === gIdx
+                                      ? {
+                                          ...g,
+                                          trips: [
+                                            ...g.trips,
+                                            makeEmptyTrip(g.trips.length + 1, {
+                                              clientName: pasteContractor,
+                                              dispatchCategory: pasteCategory,
+                                              invoiceType:
+                                                pasteCategory === 'fixed_gansen'
+                                                  ? 'bundled'
+                                                  : 'per_trip',
+                                            }),
+                                          ],
+                                        }
+                                      : g
+                                  )
+                                )
+                              }
+                              className="px-2 py-1 rounded-lg bg-blue-50 text-[#1E5EFF] hover:bg-blue-100 text-[11px] font-bold"
+                            >
+                              + 코스 추가
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPasteGroups((prev) =>
+                                  prev.filter((_, i) => i !== gIdx)
+                                )
+                              }
+                              className="px-2 py-1 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 text-[11px] font-bold"
+                            >
+                              🗑️ 이 기사 제외
+                            </button>
+                          </div>
                         </div>
 
                         {grp.trips.map((t, tIdx) => (
-                          <div
+                          <TripCardEditor
                             key={tIdx}
-                            className="p-2.5 rounded-xl bg-white border border-slate-200 space-y-2 text-xs"
-                          >
-                            <div className="flex flex-wrap items-center justify-between gap-1">
-                              <div className="font-black text-slate-900">
-                                <span className="text-[#1E5EFF] mr-1">
-                                  {t.tripNo}코스
-                                </span>
-                                {t.dispatchTag && (
-                                  <span className="mr-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px]">
-                                    {t.dispatchTag}
-                                  </span>
-                                )}
-                                {t.courseName}
-                              </div>
-                              <span className="text-[11px] text-slate-500">
-                                {t.loadTime || ''}
-                                {t.unloadTime ? ` → ${t.unloadTime}` : ''}
-                              </span>
-                            </div>
-
-                            <div className="grid grid-cols-3 gap-1.5">
-                              <input
-                                placeholder="거래처명"
-                                value={t.clientName}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setPasteGroups((prev) =>
-                                    prev.map((g, i) =>
-                                      i === gIdx
-                                        ? {
-                                            ...g,
-                                            trips: g.trips.map((tr, ti) =>
-                                              ti === tIdx
-                                                ? { ...tr, clientName: val }
-                                                : tr
-                                            ),
-                                          }
-                                        : g
-                                    )
-                                  );
-                                }}
-                                className="px-2 py-1 border rounded-lg font-bold"
-                              />
-                              <input
-                                type="text"
-                                inputMode="numeric"
-                                placeholder="공급가액(원)"
-                                value={formatNumberWithCommas(t.supplyAmount)}
-                                onChange={(e) => {
-                                  const supply = parseNumberWithoutCommas(
-                                    e.target.value
-                                  );
-                                  const vat = calcVat(supply);
-                                  setPasteGroups((prev) =>
-                                    prev.map((g, i) =>
-                                      i === gIdx
-                                        ? {
-                                            ...g,
-                                            trips: g.trips.map((tr, ti) =>
-                                              ti === tIdx
-                                                ? {
-                                                    ...tr,
-                                                    supplyAmount: supply,
-                                                    vatAmount: vat,
-                                                    totalAmount: supply + vat,
-                                                  }
-                                                : tr
-                                            ),
-                                          }
-                                        : g
-                                    )
-                                  );
-                                }}
-                                className="px-2 py-1 border rounded-lg text-right font-black text-[#1E5EFF]"
-                              />
-                              <select
-                                value={t.invoiceType}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setPasteGroups((prev) =>
-                                    prev.map((g, i) =>
-                                      i === gIdx
-                                        ? {
-                                            ...g,
-                                            trips: g.trips.map((tr, ti) =>
-                                              ti === tIdx
-                                                ? { ...tr, invoiceType: val }
-                                                : tr
-                                            ),
-                                          }
-                                        : g
-                                    )
-                                  );
-                                }}
-                                className="px-1.5 py-1 border rounded-lg font-bold bg-white"
-                              >
-                                <option value="per_trip">건별 1장</option>
-                                <option value="bundled">묶음 합산</option>
-                              </select>
-                            </div>
-
-                            {Array.isArray(t.stops) && t.stops.length > 0 && (
-                              <div className="bg-slate-50 rounded-lg p-2 space-y-1 text-[11px] text-slate-600">
-                                {t.stops.map((st, sIdx) => (
-                                  <div key={sIdx}>
-                                    <b
-                                      className={
-                                        st.stopType === '상차'
-                                          ? 'text-blue-700'
-                                          : 'text-teal-700'
-                                      }
-                                    >
-                                      [{st.stopType} {st.time}]
-                                    </b>{' '}
-                                    <b className="text-slate-800">{st.placeName}</b>
-                                    {st.tempBadge && ` · ${st.tempBadge}`}
-                                    {st.palletBadge && ` · ${st.palletBadge}`}
-                                    {st.address && (
-                                      <div className="text-slate-500 pl-2">
-                                        📍 {st.address}
-                                        {st.addressNote ? ` (${st.addressNote})` : ''}
-                                        {st.contactPhone
-                                          ? ` · 👤 ${st.contactName} ${st.contactPhone}`
-                                          : ''}
-                                      </div>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
+                            trip={t}
+                            idx={tIdx}
+                            totalTrips={grp.trips.length}
+                            stopsExpanded={Boolean(
+                              expandedStopKeys[`paste_${gIdx}_${tIdx}`]
                             )}
-                          </div>
+                            onToggleStops={() =>
+                              toggleStopEditor(`paste_${gIdx}_${tIdx}`)
+                            }
+                            onUpdateTrip={(nextTrip) =>
+                              setPasteGroups((prev) =>
+                                prev.map((g, i) =>
+                                  i === gIdx
+                                    ? {
+                                        ...g,
+                                        trips: g.trips.map((tr, ti) =>
+                                          ti === tIdx ? nextTrip : tr
+                                        ),
+                                      }
+                                    : g
+                                )
+                              )
+                            }
+                            onDeleteTrip={() => {
+                              setPasteGroups((prev) =>
+                                prev.map((g, i) =>
+                                  i === gIdx
+                                    ? {
+                                        ...g,
+                                        trips: g.trips
+                                          .filter((_, ti) => ti !== tIdx)
+                                          .map((tr, n) => ({
+                                            ...tr,
+                                            tripNo: n + 1,
+                                          })),
+                                      }
+                                    : g
+                                )
+                              );
+                              setExpandedStopKeys({});
+                            }}
+                          />
                         ))}
                       </div>
                     ))}
@@ -3424,7 +4160,7 @@ export default function SettlementsView({
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2 pt-3 border-t text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t text-sm">
               <div className="text-xs text-slate-500 font-semibold">
                 저장 즉시 세금계산서 대기함(금액 포함)과 기사앱 노선표(금액 제외)에 동시 반영됩니다.
               </div>

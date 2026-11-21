@@ -492,6 +492,8 @@ export function parseKakaoAndExcelDispatch({
   defaultWorkDate,
   drivers = [],
   vehicles = [],
+  defaultClientName = '고정 간선 원청',
+  defaultDispatchCategory = 'fixed_gansen',
 }) {
   const lines = String(rawText || '').replace(/\r\n/g, '\n').split('\n');
 
@@ -596,26 +598,56 @@ export function parseKakaoAndExcelDispatch({
   );
 
   // 3) Pass 4: (workDate + driverKey) 기준으로 기사별 그룹화 & 시간순 1코스/2코스/3코스 정렬
+  const groups = buildDriverGroupsFromRawTrips({
+    parsedTrips,
+    drivers,
+    vehicles,
+    defaultWorkDate,
+    defaultClientName,
+    defaultDispatchCategory,
+  });
+
+  return {
+    groups,
+    unmatchedMilkruns,
+  };
+}
+
+export function buildDriverGroupsFromRawTrips({
+  parsedTrips = [],
+  drivers = [],
+  vehicles = [],
+  defaultWorkDate = '',
+  defaultClientName = '고정 간선 원청',
+  defaultDispatchCategory = 'fixed_gansen',
+}) {
+  const isFixed = defaultDispatchCategory !== 'spot_charter';
+  const cleanContractor = String(defaultClientName || '').trim() || '고정 간선 원청';
+
   const groupMap = {};
   parsedTrips.forEach((rawItem) => {
+    const workDate = rawItem.workDate || defaultWorkDate;
     const matchedDriver = matchDriverByNameOrPlate(
       rawItem.driverName,
       rawItem.plateNo,
       drivers,
       vehicles
     );
-    const driverId = matchedDriver?.id || `unmatched_${rawItem.driverName || rawItem.plateNo}`;
-    const driverName = matchedDriver?.name || rawItem.driverName || '기사 미매칭';
+    const driverId =
+      matchedDriver?.id ||
+      `unmatched_${rawItem.driverName || rawItem.plateNo || 'unknown'}`;
+    const driverName =
+      matchedDriver?.name || rawItem.driverName || '기사 미매칭';
     const veh = matchedDriver?.assignedVehicleId
       ? vehicles.find((v) => v.id === matchedDriver.assignedVehicleId)
       : null;
     const plateNo = rawItem.plateNo || veh?.plateNo || '-';
-    const key = `${rawItem.workDate}__${driverId}`;
+    const key = `${workDate}__${driverId}`;
 
     if (!groupMap[key]) {
       groupMap[key] = {
         key,
-        workDate: rawItem.workDate,
+        workDate,
         driverId,
         isDriverMatched: Boolean(matchedDriver),
         driverName,
@@ -627,14 +659,29 @@ export function parseKakaoAndExcelDispatch({
 
     const supply = Math.max(0, Math.round(Number(rawItem.supplyAmount) || 0));
     const vat = Math.round(supply * 0.1);
+    const itemCat =
+      rawItem.dispatchCategory === 'spot_charter' ||
+      rawItem.dispatchCategory === 'fixed_gansen'
+        ? rawItem.dispatchCategory
+        : isFixed
+          ? 'fixed_gansen'
+          : 'spot_charter';
+    const itemInvoiceType =
+      itemCat === 'fixed_gansen' ? 'bundled' : 'per_trip';
+    const itemClientName =
+      itemCat === 'fixed_gansen'
+        ? cleanContractor
+        : rawItem.clientName || cleanContractor;
+
     groupMap[key].trips.push({
-      clientName: rawItem.clientName,
-      bizNo: '',
-      courseName: rawItem.courseName,
+      dispatchCategory: itemCat,
+      clientName: itemClientName,
+      bizNo: rawItem.bizNo || '',
+      courseName: rawItem.courseName || '',
       supplyAmount: supply,
       vatAmount: vat,
       totalAmount: supply + vat,
-      invoiceType: rawItem.invoiceType,
+      invoiceType: itemInvoiceType,
       invoiceStatus: 'pending',
       invoiceIssuedAt: '',
       invoiceMemo: '',
@@ -644,33 +691,58 @@ export function parseKakaoAndExcelDispatch({
       tempInfo: rawItem.tempInfo || '',
       loadTime: rawItem.loadTime || '',
       unloadTime: rawItem.unloadTime || '',
-      stops: rawItem.stops || [],
+      stops: Array.isArray(rawItem.stops) ? rawItem.stops : [],
     });
   });
 
-  const groups = Object.values(groupMap).map((grp) => {
+  return Object.values(groupMap).map((grp) => {
     grp.trips.sort((a, b) =>
       (a.loadTime || '99:99').localeCompare(b.loadTime || '99:99')
     );
     grp.trips = grp.trips.map((t, idx) => ({ ...t, tripNo: idx + 1 }));
     return grp;
   });
-
-  return {
-    groups,
-    unmatchedMilkruns,
-  };
 }
 
-export function buildTripFromUnmatchedMilkrun(detail) {
+export function applyClientAndCategoryToGroups(
+  groups = [],
+  { clientName, dispatchCategory }
+) {
+  const isFixed = dispatchCategory !== 'spot_charter';
+  const cleanClient = String(clientName || '').trim() || '고정 간선 원청';
+  return groups.map((grp) => ({
+    ...grp,
+    trips: (grp.trips || []).map((t) => ({
+      ...t,
+      dispatchCategory: isFixed ? 'fixed_gansen' : 'spot_charter',
+      invoiceType: isFixed ? 'bundled' : 'per_trip',
+      clientName: isFixed ? cleanClient : t.clientName || cleanClient,
+    })),
+  }));
+}
+
+export function buildTripFromUnmatchedMilkrun(
+  detail,
+  {
+    clientName = '고정 간선 원청',
+    dispatchCategory = 'fixed_gansen',
+  } = {}
+) {
   const stops = detail?.stops || [];
   const firstLoad = stops.find((s) => s.stopType === '상차');
   const lastUnload = [...stops].reverse().find((s) => s.stopType === '하차');
   const temps = Array.from(
     new Set(stops.map((s) => s.tempBadge).filter(Boolean))
   ).join(', ');
+  const isFixed = dispatchCategory !== 'spot_charter';
+  const resolvedClient = isFixed
+    ? String(clientName || '').trim() || '고정 간선 원청'
+    : lastUnload?.placeName ||
+      firstLoad?.placeName ||
+      `밀크런 ${detail.milkrunNo}번`;
   return {
-    clientName: lastUnload?.placeName || firstLoad?.placeName || `밀크런 ${detail.milkrunNo}번`,
+    dispatchCategory: isFixed ? 'fixed_gansen' : 'spot_charter',
+    clientName: resolvedClient,
     bizNo: '',
     courseName:
       firstLoad && lastUnload
@@ -679,7 +751,7 @@ export function buildTripFromUnmatchedMilkrun(detail) {
     supplyAmount: 0,
     vatAmount: 0,
     totalAmount: 0,
-    invoiceType: 'per_trip',
+    invoiceType: isFixed ? 'bundled' : 'per_trip',
     invoiceStatus: 'pending',
     invoiceIssuedAt: '',
     invoiceMemo: '',
