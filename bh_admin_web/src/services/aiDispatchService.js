@@ -7,6 +7,17 @@ import {
 import { app } from '../firebase';
 import { buildDriverGroupsFromRawTrips } from '../utils/dispatchParser';
 
+const GEMINI_MODEL_CANDIDATES = [
+  'gemini-3.5-flash',
+  'gemini-3.6-flash',
+  'gemini-3.7-flash',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
+  'gemini-2.5-flash',
+];
+
 export function fileToImagePart(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -123,7 +134,7 @@ async function callGeminiWithApiKey({ apiKey, promptText, images }) {
   ];
 
   let lastErr = null;
-  for (const modelName of ['gemini-2.5-flash', 'gemini-2.0-flash']) {
+  for (const modelName of GEMINI_MODEL_CANDIDATES) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(
       apiKey.trim()
     )}`;
@@ -167,12 +178,11 @@ async function callFirebaseAI({ promptText, images }) {
     { label: 'GoogleAI', backend: new GoogleAIBackend() },
     { label: 'VertexAI', backend: new VertexAIBackend() },
   ];
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
 
   let lastErr = null;
   for (const b of backends) {
     const ai = getAI(app, { backend: b.backend });
-    for (const modelName of models) {
+    for (const modelName of GEMINI_MODEL_CANDIDATES) {
       try {
         const model = getGenerativeModel(ai, {
           model: modelName,
