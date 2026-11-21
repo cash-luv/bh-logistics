@@ -17,14 +17,17 @@ class FirestoreService {
     return DateTime.now().toUtc().add(const Duration(hours: 9));
   }
 
-  /// 한국 시간 기준 YYYY-MM-DD 문자열
-  static String todayWorkDate() {
-    final kst = nowKst();
+  /// 한국 시간 기준 YYYY-MM-DD 문자열 (offsetDays: 0=오늘, 1=내일)
+  static String workDateWithOffset(int offsetDays) {
+    final kst = nowKst().add(Duration(days: offsetDays));
     final y = kst.year.toString().padLeft(4, '0');
     final m = kst.month.toString().padLeft(2, '0');
     final d = kst.day.toString().padLeft(2, '0');
     return '$y-$m-$d';
   }
+
+  /// 한국 시간 기준 YYYY-MM-DD 문자열
+  static String todayWorkDate() => workDateWithOffset(0);
 
   /// 한국 시간 기준 YYYY-MM 문자열
   static String todayYearMonth() {
@@ -710,5 +713,91 @@ class FirestoreService {
     );
 
     return currentHomeInfo.copyWith(todayFuelCost: newTotalCost);
+  }
+
+  /// 기사에게 배정된 특정 날짜의 배차 노선표 목록을 가져옵니다.
+  /// 금액/세금계산서 필드는 기사 화면에 노출하지 않도록 제거하여 반환합니다.
+  static Future<List<Map<String, dynamic>>> fetchDriverDispatchTrips({
+    required String driverId,
+    required String workDate,
+  }) async {
+    List<dynamic>? rawTrips;
+
+    try {
+      final dispDoc = await _db
+          .collection('Settlements')
+          .doc('dispatch_${workDate}_$driverId')
+          .get();
+      if (dispDoc.exists) {
+        final data = dispDoc.data() ?? {};
+        if (data['trips'] is List && (data['trips'] as List).isNotEmpty) {
+          rawTrips = data['trips'] as List<dynamic>;
+        }
+      }
+    } catch (_) {}
+
+    if (rawTrips == null) {
+      try {
+        final logDoc = await _db
+            .collection('DailyLogs')
+            .doc('${workDate}_$driverId')
+            .get();
+        if (logDoc.exists) {
+          final data = logDoc.data() ?? {};
+          if (data['trips'] is List && (data['trips'] as List).isNotEmpty) {
+            rawTrips = data['trips'] as List<dynamic>;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (rawTrips == null) return const [];
+
+    return rawTrips.whereType<Map>().map((raw) {
+      final m = Map<String, dynamic>.from(raw);
+      final rawStops = m['stops'];
+      final stops = rawStops is List
+          ? rawStops.whereType<Map>().map((st) {
+              final s = Map<String, dynamic>.from(st);
+              return <String, dynamic>{
+                'stopType': (s['stopType'] ?? '상차').toString(),
+                'time': (s['time'] ?? '').toString(),
+                'placeName': (s['placeName'] ?? '').toString(),
+                'tempBadge': (s['tempBadge'] ?? '').toString(),
+                'palletBadge': (s['palletBadge'] ?? '').toString(),
+                'address': (s['address'] ?? '').toString(),
+                'addressNote': (s['addressNote'] ?? '').toString(),
+                'contactName': (s['contactName'] ?? '').toString(),
+                'contactPhone': (s['contactPhone'] ?? '').toString(),
+                'tempNotice': (s['tempNotice'] ?? '').toString(),
+              };
+            }).toList()
+          : <Map<String, dynamic>>[];
+
+      return <String, dynamic>{
+        'tripNo': (m['tripNo'] as num?)?.toInt() ?? 1,
+        'clientName': (m['clientName'] ?? '').toString(),
+        'courseName': (m['courseName'] ?? '').toString(),
+        'milkrunNo': (m['milkrunNo'] ?? '').toString(),
+        'dispatchTag': (m['dispatchTag'] ?? '').toString(),
+        'cargoInfo': (m['cargoInfo'] ?? '').toString(),
+        'tempInfo': (m['tempInfo'] ?? '').toString(),
+        'loadTime': (m['loadTime'] ?? '').toString(),
+        'unloadTime': (m['unloadTime'] ?? '').toString(),
+        'stops': stops,
+      };
+    }).toList();
+  }
+
+  /// 오늘 및 내일 기사에게 배정된 배차 노선표를 한 번에 가져옵니다.
+  static Future<(List<Map<String, dynamic>>, List<Map<String, dynamic>>)>
+      fetchTodayAndTomorrowDispatches(String driverId) async {
+    final todayStr = workDateWithOffset(0);
+    final tomorrowStr = workDateWithOffset(1);
+    final results = await Future.wait([
+      fetchDriverDispatchTrips(driverId: driverId, workDate: todayStr),
+      fetchDriverDispatchTrips(driverId: driverId, workDate: tomorrowStr),
+    ]);
+    return (results[0], results[1]);
   }
 }

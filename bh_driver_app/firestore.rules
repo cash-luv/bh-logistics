@@ -113,7 +113,10 @@ service cloud.firestore {
 
     match /Settlements/{settlementId} {
       allow read: if isAdminOrAccounting() || (
-        isSignedIn() && resource.data.driverId == request.auth.uid
+        isSignedIn() && (
+          !exists(/databases/$(database)/documents/Settlements/$(settlementId)) ||
+          resource.data.driverId == request.auth.uid
+        )
       );
       allow write: if isAdminOrAccounting();
     }

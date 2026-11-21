@@ -32,6 +32,11 @@ import {
   formatNumberWithCommas,
   parseNumberWithoutCommas,
 } from '../utils/format';
+import {
+  parseKakaoAndExcelDispatch,
+  buildTripFromUnmatchedMilkrun,
+  SAMPLE_KAKAO_DISPATCH_TEXT,
+} from '../utils/dispatchParser';
 
 const CHART_COLORS = [
   '#1E5EFF',
@@ -104,6 +109,21 @@ function countPlannedOffDays(driver, yearMonth) {
   return count;
 }
 
+function normalizeStop(s) {
+  return {
+    stopType: s?.stopType === '하차' ? '하차' : '상차',
+    time: String(s?.time || '').trim(),
+    placeName: String(s?.placeName || '').trim(),
+    tempBadge: String(s?.tempBadge || '').trim(),
+    palletBadge: String(s?.palletBadge || '').trim(),
+    address: String(s?.address || '').trim(),
+    addressNote: String(s?.addressNote || '').trim(),
+    contactName: String(s?.contactName || '').trim(),
+    contactPhone: String(s?.contactPhone || '').trim(),
+    tempNotice: String(s?.tempNotice || '').trim(),
+  };
+}
+
 function makeEmptyTrip(tripNo = 1, defaults = {}) {
   const supply = Math.max(0, Number(defaults.supplyAmount) || 0);
   const vat = calcVat(supply);
@@ -119,6 +139,13 @@ function makeEmptyTrip(tripNo = 1, defaults = {}) {
     invoiceStatus: defaults.invoiceStatus || 'pending',
     invoiceIssuedAt: defaults.invoiceIssuedAt || '',
     invoiceMemo: defaults.invoiceMemo || '',
+    milkrunNo: defaults.milkrunNo || '',
+    dispatchTag: defaults.dispatchTag || '',
+    cargoInfo: defaults.cargoInfo || '',
+    tempInfo: defaults.tempInfo || '',
+    loadTime: defaults.loadTime || '',
+    unloadTime: defaults.unloadTime || '',
+    stops: Array.isArray(defaults.stops) ? defaults.stops.map(normalizeStop) : [],
   };
 }
 
@@ -137,6 +164,13 @@ function normalizeTrip(t, idx) {
     invoiceStatus: t?.invoiceStatus || 'pending',
     invoiceIssuedAt: t?.invoiceIssuedAt || '',
     invoiceMemo: t?.invoiceMemo || '',
+    milkrunNo: String(t?.milkrunNo || '').trim(),
+    dispatchTag: String(t?.dispatchTag || '').trim(),
+    cargoInfo: String(t?.cargoInfo || '').trim(),
+    tempInfo: String(t?.tempInfo || '').trim(),
+    loadTime: String(t?.loadTime || '').trim(),
+    unloadTime: String(t?.unloadTime || '').trim(),
+    stops: Array.isArray(t?.stops) ? t.stops.map(normalizeStop) : [],
   };
 }
 
@@ -175,6 +209,15 @@ export default function SettlementsView({
   const [dispDriverId, setDispDriverId] = useState('');
   const [dispTrips, setDispTrips] = useState([makeEmptyTrip(1)]);
   const [savingDispatch, setSavingDispatch] = useState(false);
+
+  // 카톡·엑셀 자동 붙여넣기 배차 등록 모달
+  const [pasteModal, setPasteModal] = useState(false);
+  const [pasteDefaultDate, setPasteDefaultDate] = useState(todayKstStr());
+  const [pasteRawText, setPasteRawText] = useState('');
+  const [pasteGroups, setPasteGroups] = useState([]);
+  const [pasteUnmatchedMilkruns, setPasteUnmatchedMilkruns] = useState([]);
+  const [pasteMergeMode, setPasteMergeMode] = useState(true);
+  const [savingPaste, setSavingPaste] = useState(false);
 
   // 기사별 급여 정산 입력 편집 상태
   const [payrollEdits, setPayrollEdits] = useState({});
@@ -869,6 +912,165 @@ export default function SettlementsView({
     }
   };
 
+  // 카톡 · 엑셀 붙여넣기 실시간 파싱
+  useEffect(() => {
+    if (!pasteModal) return;
+    if (!pasteRawText.trim()) {
+      setPasteGroups([]);
+      setPasteUnmatchedMilkruns([]);
+      return;
+    }
+    const res = parseKakaoAndExcelDispatch({
+      rawText: pasteRawText,
+      defaultWorkDate: pasteDefaultDate || todayKstStr(),
+      drivers: activeDrivers,
+      vehicles,
+    });
+    setPasteGroups(res.groups);
+    setPasteUnmatchedMilkruns(res.unmatchedMilkruns);
+  }, [pasteRawText, pasteDefaultDate, pasteModal, activeDrivers, vehicles]);
+
+  const openPasteModal = () => {
+    setPasteDefaultDate(todayKstStr());
+    setPasteRawText('');
+    setPasteGroups([]);
+    setPasteUnmatchedMilkruns([]);
+    setPasteModal(true);
+  };
+
+  const handleAssignUnmatchedMilkrun = (detail, driverId) => {
+    if (!driverId) return;
+    const drv = userMap[driverId];
+    if (!drv) return;
+    const veh = drv.assignedVehicleId
+      ? vehicleMap[drv.assignedVehicleId]
+      : null;
+    const newTrip = buildTripFromUnmatchedMilkrun(detail);
+    const workDate = pasteDefaultDate || todayKstStr();
+    const key = `${workDate}__${drv.id}`;
+
+    setPasteGroups((prev) => {
+      const idx = prev.findIndex((g) => g.key === key);
+      if (idx >= 0) {
+        return prev.map((g, gi) => {
+          if (gi !== idx) return g;
+          const merged = [...g.trips, newTrip]
+            .sort((a, b) => (a.loadTime || '99:99').localeCompare(b.loadTime || '99:99'))
+            .map((t, ti) => ({ ...t, tripNo: ti + 1 }));
+          return { ...g, trips: merged };
+        });
+      }
+      return [
+        ...prev,
+        {
+          key,
+          workDate,
+          driverId: drv.id,
+          isDriverMatched: true,
+          driverName: drv.name || '',
+          plateNo: veh?.plateNo || '-',
+          defaultRouteId: drv.defaultRouteId || 'route_gansen',
+          trips: [{ ...newTrip, tripNo: 1 }],
+        },
+      ];
+    });
+    setPasteUnmatchedMilkruns((prev) =>
+      prev.filter((d) => d.milkrunNo !== detail.milkrunNo)
+    );
+  };
+
+  const handleSavePasteGroups = async () => {
+    if (savingPaste) return;
+    const unmatchedDriverGroup = pasteGroups.find(
+      (g) => !g.driverId || String(g.driverId).startsWith('unmatched_')
+    );
+    if (unmatchedDriverGroup) {
+      alert(
+        `[${unmatchedDriverGroup.driverName}] 기사가 목록에서 선택되지 않았습니다. 기사 드롭다운에서 매칭해 주세요.`
+      );
+      return;
+    }
+    if (pasteGroups.length === 0) {
+      alert('저장할 배차 내역이 없습니다.');
+      return;
+    }
+
+    setSavingPaste(true);
+    try {
+      let totalCoursesSaved = 0;
+      for (const grp of pasteGroups) {
+        const recordKey = `${grp.workDate}_${grp.driverId}`;
+        const drv = userMap[grp.driverId];
+        const veh = drv?.assignedVehicleId
+          ? vehicleMap[drv.assignedVehicleId]
+          : null;
+
+        let finalTrips = grp.trips;
+        if (pasteMergeMode) {
+          const existingDispSnap = await getDoc(
+            doc(db, 'Settlements', `dispatch_${recordKey}`)
+          );
+          if (existingDispSnap.exists()) {
+            const oldTrips = (existingDispSnap.data()?.trips || []).map(
+              normalizeTrip
+            );
+            const mapBySig = new Map();
+            const sigOf = (t) =>
+              t.milkrunNo
+                ? `milk_${t.milkrunNo}`
+                : t.dispatchTag
+                  ? `tag_${t.dispatchTag}`
+                  : `${t.courseName}__${t.loadTime}`;
+            oldTrips.forEach((t) => mapBySig.set(sigOf(t), t));
+            grp.trips.forEach((t) => {
+              const s = sigOf(t);
+              const prevT = mapBySig.get(s);
+              mapBySig.set(
+                s,
+                prevT && prevT.invoiceStatus === 'issued'
+                  ? { ...t, invoiceStatus: 'issued', invoiceIssuedAt: prevT.invoiceIssuedAt || '' }
+                  : t
+              );
+            });
+            finalTrips = Array.from(mapBySig.values())
+              .sort((a, b) =>
+                (a.loadTime || '99:99').localeCompare(b.loadTime || '99:99')
+              )
+              .map((t, idx) => ({ ...t, tripNo: idx + 1 }));
+          }
+        }
+
+        const existingLogSnap = await getDoc(doc(db, 'DailyLogs', recordKey));
+        await saveRecordTrips({
+          workDate: grp.workDate,
+          driverId: grp.driverId,
+          driverName: drv?.name || grp.driverName,
+          plateNo: veh?.plateNo || grp.plateNo,
+          routeId: grp.defaultRouteId || 'route_gansen',
+          routeName: routeMap[grp.defaultRouteId]?.name || '간선 운송',
+          trips: finalTrips,
+          dailyLogExists: existingLogSnap.exists(),
+        });
+        totalCoursesSaved += grp.trips.length;
+      }
+
+      const firstYm = pasteGroups[0]?.workDate?.slice(0, 7);
+      setPasteModal(false);
+      if (firstYm && firstYm !== yearMonth) {
+        setYearMonth(firstYm);
+      } else {
+        await loadAll();
+      }
+      alert(
+        `✅ ${pasteGroups.length}명 기사님 · 총 ${totalCoursesSaved}코스가 자동 등록되었습니다!\n(운임은 관리자웹에만 저장되고, 기사앱에는 금액 없이 노선표·주소·담당자만 표시됩니다.)`
+      );
+    } catch (err) {
+      alert(`일괄 등록 오류: ${err.message}`);
+    } finally {
+      setSavingPaste(false);
+    }
+  };
+
   // 기사별 급여 정산 저장
   const handleSaveDriverPayroll = async (row) => {
     const edit = payrollEdits[row.driverId] || {};
@@ -1259,10 +1461,16 @@ export default function SettlementsView({
             className="px-3.5 py-2 rounded-xl border bg-white font-bold text-sm"
           />
           <button
+            onClick={openPasteModal}
+            className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow whitespace-nowrap"
+          >
+            📋 카톡 · 엑셀 배차 붙여넣기
+          </button>
+          <button
             onClick={() => openDispatchModal()}
             className="px-4 py-2.5 rounded-xl bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold text-sm shadow whitespace-nowrap"
           >
-            + 간선 코스(1~3탕) · 전날배차 등록
+            + 간선 코스(1~3탕) 수동 등록
           </button>
           <button
             onClick={handleDownloadInvoiceExcel}
@@ -1883,12 +2091,20 @@ export default function SettlementsView({
                       전날 카톡 단톡방 배차 내용을 미리 입력해 두거나, 퇴근 후 1코스·2코스·3코스 운임을 나눠 기록할 수 있습니다.
                     </p>
                   </div>
-                  <button
-                    onClick={() => openDispatchModal()}
-                    className="px-4 py-2 rounded-xl bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold text-xs"
-                  >
-                    + 전날 배차 / 다회차 코스 추가
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={openPasteModal}
+                      className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm"
+                    >
+                      📋 카톡 · 엑셀 붙여넣기
+                    </button>
+                    <button
+                      onClick={() => openDispatchModal()}
+                      className="px-4 py-2 rounded-xl bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold text-xs"
+                    >
+                      + 전날 배차 / 다회차 코스 추가
+                    </button>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[900px] text-sm text-left">
@@ -1959,35 +2175,85 @@ export default function SettlementsView({
                                 rec.trips.map((t, i) => (
                                   <div
                                     key={i}
-                                    className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs"
+                                    className="px-2.5 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1.5"
                                   >
-                                    <div>
-                                      <span className="font-black text-slate-800 mr-1.5">
-                                        {t.tripNo}코스
-                                      </span>
-                                      <span className="font-bold text-[#1E5EFF]">
-                                        [{t.clientName || '거래처 미입력'}]
-                                      </span>{' '}
-                                      <span className="text-slate-700">
-                                        {t.courseName || '코스 미입력'}
-                                      </span>
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <div>
+                                        <span className="font-black text-slate-800 mr-1.5">
+                                          {t.tripNo}코스
+                                        </span>
+                                        {t.dispatchTag && (
+                                          <span className="mr-1.5 px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-bold">
+                                            {t.dispatchTag}
+                                          </span>
+                                        )}
+                                        <span className="font-bold text-[#1E5EFF]">
+                                          [{t.clientName || '거래처 미입력'}]
+                                        </span>{' '}
+                                        <span className="text-slate-700 font-semibold">
+                                          {t.courseName || '코스 미입력'}
+                                        </span>
+                                        {(t.cargoInfo || t.tempInfo) && (
+                                          <span className="ml-1.5 text-[11px] text-slate-500">
+                                            ({[t.cargoInfo, t.tempInfo].filter(Boolean).join(' · ')})
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <span
+                                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                            t.invoiceType === 'per_trip'
+                                              ? 'bg-blue-100 text-blue-800'
+                                              : 'bg-indigo-100 text-indigo-800'
+                                          }`}
+                                        >
+                                          {t.invoiceType === 'per_trip'
+                                            ? '건별 1장'
+                                            : '묶음 합산'}
+                                        </span>
+                                        <span className="font-black text-slate-900 tabular-nums">
+                                          {t.supplyAmount.toLocaleString()}원
+                                        </span>
+                                      </div>
                                     </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      <span
-                                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                          t.invoiceType === 'per_trip'
-                                            ? 'bg-blue-100 text-blue-800'
-                                            : 'bg-indigo-100 text-indigo-800'
-                                        }`}
-                                      >
-                                        {t.invoiceType === 'per_trip'
-                                          ? '건별 1장'
-                                          : '묶음 합산'}
-                                      </span>
-                                      <span className="font-black text-slate-900">
-                                        {t.supplyAmount.toLocaleString()}원
-                                      </span>
-                                    </div>
+                                    {Array.isArray(t.stops) && t.stops.length > 0 && (
+                                      <div className="pl-2 border-l-2 border-blue-200 space-y-0.5 text-[11px] text-slate-600">
+                                        {t.stops.map((st, sIdx) => (
+                                          <div key={sIdx} className="flex flex-wrap items-center gap-1.5">
+                                            <span
+                                              className={`px-1.5 py-0.2 rounded font-bold text-[10px] ${
+                                                st.stopType === '상차'
+                                                  ? 'bg-blue-50 text-blue-700'
+                                                  : 'bg-teal-50 text-teal-700'
+                                              }`}
+                                            >
+                                              {st.stopType} {st.time}
+                                            </span>
+                                            <span className="font-bold text-slate-800">
+                                              {st.placeName}
+                                            </span>
+                                            {st.tempBadge && (
+                                              <span className="text-sky-700 font-semibold">
+                                                {st.tempBadge}
+                                              </span>
+                                            )}
+                                            {st.palletBadge && (
+                                              <span>· {st.palletBadge}</span>
+                                            )}
+                                            {st.address && (
+                                              <span className="text-slate-500">
+                                                · {st.address}
+                                              </span>
+                                            )}
+                                            {st.contactPhone && (
+                                              <span className="text-slate-500">
+                                                ({st.contactName} {st.contactPhone})
+                                              </span>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                 ))
                               )}
@@ -2819,6 +3085,370 @@ export default function SettlementsView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* ====================================================================
+          모달 2: 카톡 단톡방 · 밀크런 상세 · 엑셀 배차표 붙여넣기 자동 등록
+      ===================================================================== */}
+      {pasteModal && (
+        <div
+          onClick={() => !savingPaste && setPasteModal(false)}
+          className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl p-6 max-w-4xl w-full max-h-[92vh] flex flex-col space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b pb-3">
+              <div>
+                <div className="text-xs font-bold text-indigo-600">
+                  무료 자동 분석기 · 카톡 요약 + 밀크런 주소 + 엑셀 복사 일괄 인식
+                </div>
+                <h2 className="text-xl font-black text-slate-900">
+                  📋 카톡 · 엑셀 배차 붙여넣기 자동등록
+                </h2>
+              </div>
+              <button
+                type="button"
+                disabled={savingPaste}
+                onClick={() => setPasteModal(false)}
+                className="px-3 py-1 rounded-lg bg-slate-100 font-bold text-sm"
+              >
+                닫기
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1 min-h-0 overflow-y-auto pr-1">
+              {/* 왼쪽: 붙여넣기 입력 칸 */}
+              <div className="space-y-3 flex flex-col">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-slate-700">기본 날짜:</span>
+                    <input
+                      type="date"
+                      value={pasteDefaultDate}
+                      onChange={(e) => setPasteDefaultDate(e.target.value)}
+                      className="px-2.5 py-1 border rounded-lg font-bold"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setPasteDefaultDate(kstOffsetDateStr(0))}
+                      className="px-2 py-1 rounded bg-slate-100 font-bold"
+                    >
+                      오늘
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPasteDefaultDate(kstOffsetDateStr(1))}
+                      className="px-2 py-1 rounded bg-blue-50 text-[#1E5EFF] font-bold"
+                    >
+                      내일
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPasteRawText(SAMPLE_KAKAO_DISPATCH_TEXT)}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold hover:bg-indigo-100"
+                  >
+                    예시 데이터 채우기
+                  </button>
+                </div>
+
+                <textarea
+                  rows={14}
+                  placeholder={`여기에 카카오톡 배차 글이나 엑셀 표를 복사(Ctrl+C)해서 그대로 붙여넣기(Ctrl+V) 하세요.\n\n예)\n6번 정태광님\n냉장7파렛 9시\n청주.증평 ㅡ 용인 17만\n11시30분하차/1도,10도\n\n> 밀크런 6번 / 냉장 총 7파렛 ...`}
+                  value={pasteRawText}
+                  onChange={(e) => setPasteRawText(e.target.value)}
+                  className="w-full flex-1 min-h-[260px] p-3 border rounded-xl text-xs font-mono leading-relaxed bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                />
+
+                <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={pasteMergeMode}
+                    onChange={(e) => setPasteMergeMode(e.target.checked)}
+                  />
+                  같은 날짜에 이미 등록된 코스가 있으면 덮어쓰지 않고 이어 붙이기
+                </label>
+              </div>
+
+              {/* 오른쪽: 실시간 분석 미리보기 (수정 가능) */}
+              <div className="space-y-3 overflow-y-auto max-h-[520px]">
+                <div className="flex items-center justify-between">
+                  <div className="font-black text-sm text-slate-900">
+                    자동 분석 미리보기 ({pasteGroups.length}명)
+                  </div>
+                  <span className="text-[11px] font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full">
+                    금액은 관리자웹에만 저장됨 (기사앱 비공개)
+                  </span>
+                </div>
+
+                {pasteGroups.length === 0 && pasteUnmatchedMilkruns.length === 0 ? (
+                  <div className="p-8 border rounded-2xl text-center text-xs text-slate-400 font-semibold">
+                    왼쪽 칸에 카톡 배차나 엑셀 내용을 붙여넣으면 기사별 1·2·3코스가 자동으로 정리됩니다.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {pasteUnmatchedMilkruns.map((um) => (
+                      <div
+                        key={um.milkrunNo}
+                        className="p-3 rounded-xl bg-amber-50 border border-amber-300 space-y-2 text-xs"
+                      >
+                        <div className="font-black text-amber-900">
+                          ⚠️ 요약 글 없이 [밀크런 {um.milkrunNo}번] 상세 주소만 붙여넣어졌습니다. 담당 기사를 골라 주세요:
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <select
+                            defaultValue=""
+                            onChange={(e) =>
+                              handleAssignUnmatchedMilkrun(um, e.target.value)
+                            }
+                            className="flex-1 px-2.5 py-1.5 border rounded-lg bg-white font-bold"
+                          >
+                            <option value="">기사 선택...</option>
+                            {activeDrivers.map((d) => (
+                              <option key={d.id} value={d.id}>
+                                {d.name} ({vehicleMap[d.assignedVehicleId]?.plateNo || '미배정'})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    ))}
+
+                    {pasteGroups.map((grp, gIdx) => (
+                      <div
+                        key={grp.key}
+                        className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded-lg bg-slate-900 text-white text-xs font-black">
+                              {grp.workDate}
+                            </span>
+                            {grp.isDriverMatched ? (
+                              <span className="font-black text-slate-900 text-sm">
+                                {grp.driverName}{' '}
+                                <span className="text-xs font-semibold text-slate-500">
+                                  ({grp.plateNo})
+                                </span>
+                              </span>
+                            ) : (
+                              <select
+                                value=""
+                                onChange={(e) => {
+                                  const drvId = e.target.value;
+                                  const drv = userMap[drvId];
+                                  if (!drv) return;
+                                  const plate =
+                                    vehicleMap[drv.assignedVehicleId]?.plateNo ||
+                                    '-';
+                                  setPasteGroups((prev) =>
+                                    prev.map((g, i) =>
+                                      i === gIdx
+                                        ? {
+                                            ...g,
+                                            driverId: drv.id,
+                                            isDriverMatched: true,
+                                            driverName: drv.name,
+                                            plateNo: plate,
+                                            defaultRouteId:
+                                              drv.defaultRouteId || 'route_gansen',
+                                          }
+                                        : g
+                                    )
+                                  );
+                                }}
+                                className="px-2 py-1 border border-red-400 rounded-lg bg-red-50 text-xs font-bold text-red-700"
+                              >
+                                <option value="">
+                                  ⚠️ {grp.driverName} 매칭 선택...
+                                </option>
+                                {activeDrivers.map((d) => (
+                                  <option key={d.id} value={d.id}>
+                                    {d.name}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                          <span className="text-xs font-black text-[#1E5EFF]">
+                            총 {grp.trips.length}코스 ·{' '}
+                            {grp.trips
+                              .reduce((s, t) => s + (Number(t.supplyAmount) || 0), 0)
+                              .toLocaleString()}
+                            원
+                          </span>
+                        </div>
+
+                        {grp.trips.map((t, tIdx) => (
+                          <div
+                            key={tIdx}
+                            className="p-2.5 rounded-xl bg-white border border-slate-200 space-y-2 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-1">
+                              <div className="font-black text-slate-900">
+                                <span className="text-[#1E5EFF] mr-1">
+                                  {t.tripNo}코스
+                                </span>
+                                {t.dispatchTag && (
+                                  <span className="mr-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px]">
+                                    {t.dispatchTag}
+                                  </span>
+                                )}
+                                {t.courseName}
+                              </div>
+                              <span className="text-[11px] text-slate-500">
+                                {t.loadTime || ''}
+                                {t.unloadTime ? ` → ${t.unloadTime}` : ''}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-1.5">
+                              <input
+                                placeholder="거래처명"
+                                value={t.clientName}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setPasteGroups((prev) =>
+                                    prev.map((g, i) =>
+                                      i === gIdx
+                                        ? {
+                                            ...g,
+                                            trips: g.trips.map((tr, ti) =>
+                                              ti === tIdx
+                                                ? { ...tr, clientName: val }
+                                                : tr
+                                            ),
+                                          }
+                                        : g
+                                    )
+                                  );
+                                }}
+                                className="px-2 py-1 border rounded-lg font-bold"
+                              />
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="공급가액(원)"
+                                value={formatNumberWithCommas(t.supplyAmount)}
+                                onChange={(e) => {
+                                  const supply = parseNumberWithoutCommas(
+                                    e.target.value
+                                  );
+                                  const vat = calcVat(supply);
+                                  setPasteGroups((prev) =>
+                                    prev.map((g, i) =>
+                                      i === gIdx
+                                        ? {
+                                            ...g,
+                                            trips: g.trips.map((tr, ti) =>
+                                              ti === tIdx
+                                                ? {
+                                                    ...tr,
+                                                    supplyAmount: supply,
+                                                    vatAmount: vat,
+                                                    totalAmount: supply + vat,
+                                                  }
+                                                : tr
+                                            ),
+                                          }
+                                        : g
+                                    )
+                                  );
+                                }}
+                                className="px-2 py-1 border rounded-lg text-right font-black text-[#1E5EFF]"
+                              />
+                              <select
+                                value={t.invoiceType}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setPasteGroups((prev) =>
+                                    prev.map((g, i) =>
+                                      i === gIdx
+                                        ? {
+                                            ...g,
+                                            trips: g.trips.map((tr, ti) =>
+                                              ti === tIdx
+                                                ? { ...tr, invoiceType: val }
+                                                : tr
+                                            ),
+                                          }
+                                        : g
+                                    )
+                                  );
+                                }}
+                                className="px-1.5 py-1 border rounded-lg font-bold bg-white"
+                              >
+                                <option value="per_trip">건별 1장</option>
+                                <option value="bundled">묶음 합산</option>
+                              </select>
+                            </div>
+
+                            {Array.isArray(t.stops) && t.stops.length > 0 && (
+                              <div className="bg-slate-50 rounded-lg p-2 space-y-1 text-[11px] text-slate-600">
+                                {t.stops.map((st, sIdx) => (
+                                  <div key={sIdx}>
+                                    <b
+                                      className={
+                                        st.stopType === '상차'
+                                          ? 'text-blue-700'
+                                          : 'text-teal-700'
+                                      }
+                                    >
+                                      [{st.stopType} {st.time}]
+                                    </b>{' '}
+                                    <b className="text-slate-800">{st.placeName}</b>
+                                    {st.tempBadge && ` · ${st.tempBadge}`}
+                                    {st.palletBadge && ` · ${st.palletBadge}`}
+                                    {st.address && (
+                                      <div className="text-slate-500 pl-2">
+                                        📍 {st.address}
+                                        {st.addressNote ? ` (${st.addressNote})` : ''}
+                                        {st.contactPhone
+                                          ? ` · 👤 ${st.contactName} ${st.contactPhone}`
+                                          : ''}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-3 border-t text-sm">
+              <div className="text-xs text-slate-500 font-semibold">
+                저장 즉시 세금계산서 대기함(금액 포함)과 기사앱 노선표(금액 제외)에 동시 반영됩니다.
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={savingPaste}
+                  onClick={() => setPasteModal(false)}
+                  className="px-4 py-2.5 rounded-xl bg-slate-100 font-bold"
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  disabled={savingPaste || pasteGroups.length === 0}
+                  onClick={handleSavePasteGroups}
+                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold disabled:opacity-50"
+                >
+                  {savingPaste
+                    ? '저장 중...'
+                    : `✅ ${pasteGroups.length}명 배차 일괄 등록`}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

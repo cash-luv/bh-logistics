@@ -11,6 +11,7 @@ import 'screens/app_version_label.dart';
 import 'screens/change_password_screen.dart';
 import 'screens/check_in_screen.dart';
 import 'screens/check_out_screen.dart';
+import 'screens/dispatch_schedule_screen.dart';
 import 'screens/driver_home_screen.dart';
 import 'screens/fuel_log_screen.dart';
 import 'screens/login_screen.dart';
@@ -169,6 +170,8 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
   bool _showInitialPasswordPrompt = false;
   int _pendingPhotoCount = 0;
   Map<String, bool>? _permStatus;
+  List<Map<String, dynamic>> _todayTrips = const [];
+  List<Map<String, dynamic>> _tomorrowTrips = const [];
 
   bool get _hasAllRequiredPermissions {
     if (!Platform.isAndroid) return true;
@@ -222,11 +225,24 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
     if (state == AppLifecycleState.resumed) {
       _flushOfflinePhotos();
       _refreshPermissions(promptUpdateIfUnlocked: true);
+      _loadDispatches();
       // 앱으로 돌아올 때마다 새 버전이 있는지 확인합니다.
       if (_hasAllRequiredPermissions && !_showInitialPasswordPrompt && mounted) {
         AppUpdateService.checkAndPromptUpdate(context);
       }
     }
+  }
+
+  Future<void> _loadDispatches() async {
+    try {
+      final (today, tomorrow) =
+          await FirestoreService.fetchTodayAndTomorrowDispatches(widget.uid);
+      if (!mounted) return;
+      setState(() {
+        _todayTrips = today;
+        _tomorrowTrips = tomorrow;
+      });
+    } catch (_) {}
   }
 
   Future<void> _flushOfflinePhotos() async {
@@ -268,8 +284,9 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
       _pendingPhotoCount = pending;
     });
 
-    // 시작 시 대기 중인 오프라인 사진 자동 업로드 시도
+    // 시작 시 대기 중인 오프라인 사진 자동 업로드 및 배차 노선표 로드
     _flushOfflinePhotos();
+    _loadDispatches();
 
     if (_hasAllRequiredPermissions && _info?.status == WorkStatus.working) {
       GpsTrackerService.startTrackingForToday(FirestoreService.todayWorkDate());
@@ -385,6 +402,24 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
     _flushOfflinePhotos();
   }
 
+  Future<void> _openDispatchSchedule(int initialTab) async {
+    final current = _info;
+    if (current == null) return;
+    await Navigator.of(context).push<void>(
+      _fastRoute(
+        DispatchScheduleScreen(
+          driverId: widget.uid,
+          driverName: current.driverName,
+          plateNo: current.plateNo,
+          initialTab: initialTab,
+          initialTodayTrips: _todayTrips,
+          initialTomorrowTrips: _tomorrowTrips,
+        ),
+      ),
+    );
+    _loadDispatches();
+  }
+
   Future<void> _openChangePassword() async {
     final changed = await Navigator.of(context).push<bool>(
       _fastRoute(const ChangePasswordScreen(isInitialSetup: false)),
@@ -440,6 +475,9 @@ class _AuthenticatedHomeState extends State<_AuthenticatedHome>
       onSignOut: _signOut,
       pendingPhotoCount: _pendingPhotoCount,
       onRetryPendingPhotos: _flushOfflinePhotos,
+      todayTrips: _todayTrips,
+      tomorrowTrips: _tomorrowTrips,
+      onOpenDispatchSchedule: _openDispatchSchedule,
     );
   }
 }

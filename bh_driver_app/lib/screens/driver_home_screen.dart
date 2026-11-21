@@ -19,6 +19,9 @@ class DriverHomeScreen extends StatelessWidget {
     this.onSignOut,
     this.pendingPhotoCount = 0,
     this.onRetryPendingPhotos,
+    this.todayTrips = const [],
+    this.tomorrowTrips = const [],
+    this.onOpenDispatchSchedule,
   });
 
   final DriverHomeInfo info;
@@ -29,6 +32,9 @@ class DriverHomeScreen extends StatelessWidget {
   final VoidCallback? onSignOut;
   final int pendingPhotoCount;
   final VoidCallback? onRetryPendingPhotos;
+  final List<Map<String, dynamic>> todayTrips;
+  final List<Map<String, dynamic>> tomorrowTrips;
+  final void Function(int initialTab)? onOpenDispatchSchedule;
 
   bool get _canCheckIn =>
       info.hasVehicle && info.status == WorkStatus.beforeWork;
@@ -86,26 +92,41 @@ class DriverHomeScreen extends StatelessWidget {
                       ],
                       const SizedBox(height: 16),
                       _StatusCard(info: info),
-                      const SizedBox(height: 20),
+                      if ((todayTrips.isNotEmpty || tomorrowTrips.isNotEmpty) &&
+                          onOpenDispatchSchedule != null) ...[
+                        const SizedBox(height: 14),
+                        _DispatchBannerCard(
+                          todayTrips: todayTrips,
+                          tomorrowTrips: tomorrowTrips,
+                          onTap: onOpenDispatchSchedule!,
+                        ),
+                      ],
+                      const SizedBox(height: 18),
                       Expanded(
-                        child: _BigActionButton(
-                          icon: Icons.fact_check,
-                          title: '출근 / 차량 점검',
-                          subtitle: _checkInSub,
-                          color: AppColors.primary,
-                          enabled: _canCheckIn,
-                          onTap: onCheckIn,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(minHeight: 138),
+                          child: _BigActionButton(
+                            icon: Icons.fact_check,
+                            title: '출근 / 차량 점검',
+                            subtitle: _checkInSub,
+                            color: AppColors.primary,
+                            enabled: _canCheckIn,
+                            onTap: onCheckIn,
+                          ),
                         ),
                       ),
                       const SizedBox(height: 16),
                       Expanded(
-                        child: _BigActionButton(
-                          icon: Icons.camera_alt,
-                          title: '퇴근 / 빠른 보고',
-                          subtitle: _checkOutSub,
-                          color: AppColors.teal,
-                          enabled: _canCheckOut,
-                          onTap: onCheckOut,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(minHeight: 138),
+                          child: _BigActionButton(
+                            icon: Icons.camera_alt,
+                            title: '퇴근 / 빠른 보고',
+                            subtitle: _checkOutSub,
+                            color: AppColors.teal,
+                            enabled: _canCheckOut,
+                            onTap: onCheckOut,
+                          ),
                         ),
                       ),
                       if (_canCheckOut && onFuelLog != null) ...[
@@ -496,3 +517,121 @@ String _formatKm(int km) => km.toString().replaceAllMapped(
       RegExp(r'\B(?=(\d{3})+(?!\d))'),
       (m) => ',',
     );
+
+class _DispatchBannerCard extends StatelessWidget {
+  const _DispatchBannerCard({
+    required this.todayTrips,
+    required this.tomorrowTrips,
+    required this.onTap,
+  });
+
+  final List<Map<String, dynamic>> todayTrips;
+  final List<Map<String, dynamic>> tomorrowTrips;
+  final void Function(int initialTab) onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool hasToday = todayTrips.isNotEmpty;
+    final List<Map<String, dynamic>> displayTrips =
+        hasToday ? todayTrips : tomorrowTrips;
+    final int initialTab = hasToday ? 0 : 1;
+
+    return Material(
+      color: hasToday ? AppColors.infoBg : AppColors.warnBg,
+      borderRadius: BorderRadius.circular(22),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => onTap(initialTab),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(
+              color: hasToday ? AppColors.primary : AppColors.warn,
+              width: 2,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.map_outlined,
+                    size: 32,
+                    color: hasToday ? AppColors.primary : AppColors.warn,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      hasToday
+                          ? '오늘의 배차 노선표 (${todayTrips.length}코스)'
+                          : '내일 배차 노선표 (${tomorrowTrips.length}코스)',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: hasToday ? AppColors.primary : AppColors.warn,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: hasToday ? AppColors.primary : AppColors.warn,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Text(
+                      '보기',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              for (int i = 0; i < displayTrips.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    _tripLine(displayTrips[i], i),
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.text,
+                    ),
+                  ),
+                ),
+              if (hasToday && tomorrowTrips.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '내일 배차 ${tomorrowTrips.length}코스도 등록되어 있어요',
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.teal,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _tripLine(Map<String, dynamic> trip, int idx) {
+    final no = (trip['tripNo'] as num?)?.toInt() ?? (idx + 1);
+    final time = (trip['loadTime'] ?? '').toString().trim();
+    final course = (trip['courseName'] ?? '').toString().trim();
+    final cargo = (trip['cargoInfo'] ?? '').toString().trim();
+    final timePart = time.isNotEmpty ? ' ($time)' : '';
+    final cargoPart = cargo.isNotEmpty ? ' · $cargo' : '';
+    return '• $no코스$timePart $course$cargoPart';
+  }
+}
