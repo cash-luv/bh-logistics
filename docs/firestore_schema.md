@@ -24,7 +24,7 @@
   {
     "driverCode": "bh01",          // 고유 기사 코드 (대표: bh-ceo, 간선총괄: bh-tk, 기사: bh01~)
     "name": "홍길동",              // 기사 성함
-    "role": "driver",             // driver | admin
+    "role": "driver",             // driver | admin | accounting (경리 전용)
     "dept": "교촌-대전",           // 소속 부서 / 사업소
     "phone": "010-1234-5678",     // 연락처
     "hireDate": "2026-01-01",     // 입사일 (YYYY-MM-DD)
@@ -77,6 +77,12 @@
     "expectedKm": 0,              // 기준 거리 (km, 0은 실제 운행거리로 자동 산정)
     "isVariableKm": true,         // 실제 운행거리 기반 자동 정산 여부
     "kmTolerancePct": 100,        // 거리 허용 오차율
+    "billingType": "monthly",     // variable (간선·용차 변동형) | monthly (월정액 고정형)
+    "clientName": "교촌F&B",       // 거래처명
+    "bizNo": "123-45-67890",      // 거래처 사업자등록번호
+    "monthlyContractAmount": 0,   // 월정액 거래처 전체 합계 계약금액 (원)
+    "billingDay": 31,             // 세금계산서 발행/결제 기준일 (예: 25, 31=말일)
+    "invoiceMode": "monthly",     // per_trip | bundled | monthly
     "sortOrder": 5,               // 정렬 순서
     "isActive": true
   }
@@ -116,7 +122,22 @@
     "startPhotos": {
       "odometer": "photos/2026-11-17_odometer.jpg",
       "front": "photos/2026-11-17_front.jpg"
-    }
+    },
+    "trips": [                    // 간선 다회차 코스(1~3탕) 및 세금계산서 발행 정보
+      {
+        "tripNo": 1,
+        "clientName": "거래처명",
+        "bizNo": "123-45-67890",
+        "courseName": "대전→용인",
+        "supplyAmount": 250000,
+        "vatAmount": 25000,
+        "totalAmount": 275000,
+        "invoiceType": "per_trip", // per_trip(건별 1장 용차/콜) | bundled(고정거래처 묶음)
+        "invoiceStatus": "pending",// pending(발행대기) | issued(발행완료) | excluded(제외)
+        "invoiceIssuedAt": "2026-11-21T09:00:00",
+        "invoiceMemo": ""
+      }
+    ]
   }
   ```
 
@@ -124,9 +145,11 @@
 - **문서 ID**: 자동 생성 ID
 - **주요 필드**: `vehicleId`, `reportedBy`, `category`(타이어/엔진오일/요소수 등), `status`(pending/in_progress/resolved), `cost`, `description`, `photoPath`
 
-### 6) `Settlements` (월별 마감 정산서)
-- **문서 ID**: `{yearMonth}_{driverId}`
-- **주요 필드**: `driverId`, `yearMonth`, `workDays`, `totalDrivenKm`, `totalFare`, `totalFuel`, `netPay`, `isClosed`, `closedAt`
+### 6) `Settlements` (월별 마감 정산서 · 선배차 원장 · 월정액 세금계산서 상태)
+- **문서 ID**:
+  - 기사 월 급여·마감 정산: `{yearMonth}_{driverId}` (`baseSalary`, `extraTripsCount`, `extraTripPay`, `offDaysCount`, `offDayDeduction`, `finalPay`, `memo`, `workDays`, `totalAmount`, `totalKm`, `status`)
+  - 전날 카톡 선배차/다회차 원장: `dispatch_{workDate}_{driverId}` (`docType: "dispatch"`, `yearMonth`, `workDate`, `driverId`, `driverName`, `plateNo`, `trips`, `totalSupplyAmount`)
+  - 월정액 거래처 세금계산서 발행 상태: `invoice_monthly_{yearMonth}_{routeId}` (`docType: "monthly_invoice"`, `yearMonth`, `routeId`, `clientName`, `bizNo`, `billingDay`, `supplyAmount`, `vatAmount`, `totalAmount`, `invoiceStatus`, `invoiceIssuedAt`, `invoiceMemo`)
 
 ### 7) `Settings` (시스템 설정 및 원격 업데이트)
 - **문서 ID**: `appVersion`, `fuel`

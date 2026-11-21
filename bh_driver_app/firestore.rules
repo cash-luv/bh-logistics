@@ -17,8 +17,22 @@ service cloud.firestore {
       );
     }
 
+    function isAccounting() {
+      return isSignedIn() && (
+        request.auth.token.role == 'accounting' ||
+        (
+          exists(/databases/$(database)/documents/Users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/Users/$(request.auth.uid)).data.role == 'accounting'
+        )
+      );
+    }
+
+    function isAdminOrAccounting() {
+      return isAdmin() || isAccounting();
+    }
+
     match /Users/{userId} {
-      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdminOrAccounting());
       allow create: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
       allow delete: if isAdmin();
       allow update: if isAdmin() || (
@@ -47,7 +61,7 @@ service cloud.firestore {
     match /Routes/{routeId} {
       allow read: if isSignedIn();
       allow create, delete: if isAdmin();
-      allow update: if isAdmin() || (
+      allow update: if isAdminOrAccounting() || (
         isSignedIn() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'expectedKm',
@@ -58,7 +72,7 @@ service cloud.firestore {
     }
 
     match /DailyLogs/{logId} {
-      allow read: if isAdmin() || (
+      allow read: if isAdminOrAccounting() || (
         isSignedIn() &&
         (
           !exists(/databases/$(database)/documents/DailyLogs/$(logId)) ||
@@ -66,7 +80,7 @@ service cloud.firestore {
         )
       );
 
-      allow create: if isAdmin() || (
+      allow create: if isAdminOrAccounting() || (
         isSignedIn() &&
         request.resource.data.driverId == request.auth.uid &&
         logId == request.resource.data.workDate + '_' + request.auth.uid &&
@@ -77,7 +91,7 @@ service cloud.firestore {
         )
       );
 
-      allow update: if isAdmin() || (
+      allow update: if isAdminOrAccounting() || (
         isSignedIn() &&
         resource.data.driverId == request.auth.uid &&
         request.resource.data.driverId == request.auth.uid &&
@@ -98,16 +112,16 @@ service cloud.firestore {
     }
 
     match /Settlements/{settlementId} {
-      allow read: if isAdmin() || (
+      allow read: if isAdminOrAccounting() || (
         isSignedIn() && resource.data.driverId == request.auth.uid
       );
-      allow write: if isAdmin();
+      allow write: if isAdminOrAccounting();
     }
 
-    // 7. Settings 컬렉션: 앱 최신 버전(appVersion) 및 경유값(fuel) 설정. 모든 로그인 사용자가 읽을 수 있고 관리자가 수정
+    // 7. Settings 컬렉션: 앱 최신 버전(appVersion) 및 경유값(fuel) 설정. 모든 로그인 사용자가 읽을 수 있고 관리자/경리가 수정
     match /Settings/{settingId} {
       allow read: if isSignedIn();
-      allow write: if isAdmin();
+      allow write: if isAdminOrAccounting();
     }
   }
 }

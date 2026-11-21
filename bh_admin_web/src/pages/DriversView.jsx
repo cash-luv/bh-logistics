@@ -192,7 +192,7 @@ export default function DriversView() {
     setDrivers(
       uSnap.docs
         .map((d) => ({ id: d.id, ...d.data() }))
-        .filter((u) => u.role !== 'admin' || u.driverCode === 'bh-ceo' || u.name === '김병훈')
+        .filter((u) => (u.role !== 'admin' && u.role !== 'accounting') || u.driverCode === 'bh-ceo' || u.name === '김병훈')
         .sort((a, b) => {
           if (a.driverCode === 'bh-ceo') return -1;
           if (b.driverCode === 'bh-ceo') return 1;

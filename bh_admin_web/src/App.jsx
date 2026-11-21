@@ -79,8 +79,10 @@ export default function App() {
     );
   }
 
-  // [관리자 2] role === 'admin' && isActive !== false 확인
-  if (!user || !profile || profile.role !== 'admin' || profile.isActive === false) {
+  // [관리자 2] role === 'admin' | 'accounting' && isActive !== false 확인
+  const isAllowedWebRole =
+    profile?.role === 'admin' || profile?.role === 'accounting';
+  if (!user || !profile || !isAllowedWebRole || profile.isActive === false) {
     return (
       <AdminLoginScreen
         currentUser={user}
@@ -89,6 +91,9 @@ export default function App() {
       />
     );
   }
+
+  const isAccountingOnly = profile.role === 'accounting';
+  const effectiveTab = isAccountingOnly ? 'settlements' : activeTab;
 
   const openVehicleDetail = (vehId) => {
     setSelectedVehicleId(vehId);
@@ -104,71 +109,90 @@ export default function App() {
             BH로지스틱스
           </div>
           <div className="text-xs text-slate-400 mt-1">
-            본사 통합 배차 · 운행 · 정산 시스템
+            {isAccountingOnly
+              ? '경리 전용 · 매출 · 세금계산서 시스템'
+              : '본사 통합 배차 · 운행 · 정산 시스템'}
           </div>
         </div>
 
         <nav className="flex-1 p-4 space-y-1.5">
-          <NavItem
-            label="1. 종합 KPI 대시보드"
-            active={activeTab === 'dashboard'}
-            onClick={() => {
-              setSelectedVehicleId(null);
-              setActiveTab('dashboard');
-            }}
-          />
-          <NavItem
-            label="2. 기사별 출근표 · 휴무"
-            active={activeTab === 'attendance'}
-            onClick={() => {
-              setSelectedVehicleId(null);
-              setActiveTab('attendance');
-            }}
-          />
-          <NavItem
-            label="3. 운행 기록 (DailyLogs)"
-            active={activeTab === 'logs'}
-            onClick={() => {
-              setSelectedVehicleId(null);
-              setActiveTab('logs');
-            }}
-          />
-          <NavItem
-            label="4. 차량 · 공차 · 정비"
-            active={activeTab === 'vehicles'}
-            onClick={() => {
-              setSelectedVehicleId(null);
-              setActiveTab('vehicles');
-            }}
-          />
-          <NavItem
-            label="5. 기사 관리 · 배정"
-            active={activeTab === 'drivers'}
-            onClick={() => {
-              setSelectedVehicleId(null);
-              setActiveTab('drivers');
-            }}
-          />
-          <NavItem
-            label="6. 노선 · 단가 관리"
-            active={activeTab === 'routes'}
-            onClick={() => {
-              setSelectedVehicleId(null);
-              setActiveTab('routes');
-            }}
-          />
-          <NavItem
-            label="7. 월 결산 · 차트 · 마감"
-            active={activeTab === 'settlements'}
-            onClick={() => {
-              setSelectedVehicleId(null);
-              setActiveTab('settlements');
-            }}
-          />
+          {isAccountingOnly ? (
+            <NavItem
+              label="매출 · 세금계산서 · 정산"
+              active={true}
+              onClick={() => {}}
+            />
+          ) : (
+            <>
+              <NavItem
+                label="1. 종합 KPI 대시보드"
+                active={effectiveTab === 'dashboard'}
+                onClick={() => {
+                  setSelectedVehicleId(null);
+                  setActiveTab('dashboard');
+                }}
+              />
+              <NavItem
+                label="2. 기사별 출근표 · 휴무"
+                active={effectiveTab === 'attendance'}
+                onClick={() => {
+                  setSelectedVehicleId(null);
+                  setActiveTab('attendance');
+                }}
+              />
+              <NavItem
+                label="3. 운행 기록 (DailyLogs)"
+                active={effectiveTab === 'logs'}
+                onClick={() => {
+                  setSelectedVehicleId(null);
+                  setActiveTab('logs');
+                }}
+              />
+              <NavItem
+                label="4. 차량 · 공차 · 정비"
+                active={effectiveTab === 'vehicles'}
+                onClick={() => {
+                  setSelectedVehicleId(null);
+                  setActiveTab('vehicles');
+                }}
+              />
+              <NavItem
+                label="5. 기사 관리 · 배정"
+                active={effectiveTab === 'drivers'}
+                onClick={() => {
+                  setSelectedVehicleId(null);
+                  setActiveTab('drivers');
+                }}
+              />
+              <NavItem
+                label="6. 노선 · 단가 관리"
+                active={effectiveTab === 'routes'}
+                onClick={() => {
+                  setSelectedVehicleId(null);
+                  setActiveTab('routes');
+                }}
+              />
+              <NavItem
+                label="7. 매출 · 세금계산서 · 정산"
+                active={effectiveTab === 'settlements'}
+                onClick={() => {
+                  setSelectedVehicleId(null);
+                  setActiveTab('settlements');
+                }}
+              />
+            </>
+          )}
         </nav>
 
         <div className="p-4 border-t border-slate-800 text-sm">
-          <div className="font-bold">{profile.name || '관리자'}님</div>
+          <div className="flex items-center gap-2">
+            <span className="font-bold">{profile.name || '관리자'}님</span>
+            {isAccountingOnly && (
+              <span className="px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/40 text-[10px] font-black">
+                경리 전용 계정
+              </span>
+            )}
+          </div>
           <div className="text-slate-400 text-xs truncate">{user.email}</div>
           <button
             onClick={() => signOut(auth)}
@@ -182,7 +206,7 @@ export default function App() {
       {/* 오른쪽 메인 영역 */}
       <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 overflow-x-hidden">
         <Suspense fallback={<div className="text-sm text-slate-400 p-6">불러오는 중...</div>}>
-        {activeTab === 'dashboard' && (
+        {effectiveTab === 'dashboard' && (
           <DashboardView
             onNavigateVehicles={(filter) => {
               setSelectedVehicleId(null);
@@ -193,15 +217,15 @@ export default function App() {
             onNavigateLogs={() => setActiveTab('logs')}
           />
         )}
-        {activeTab === 'attendance' && <AttendanceView />}
-        {activeTab === 'logs' && (
+        {effectiveTab === 'attendance' && <AttendanceView />}
+        {effectiveTab === 'logs' && (
           <DailyLogsView
             adminUid={user.uid}
             presetDriverId={logPresetDriverId}
             onClearPresetDriver={() => setLogPresetDriverId('')}
           />
         )}
-        {activeTab === 'vehicles' &&
+        {effectiveTab === 'vehicles' &&
           (selectedVehicleId ? (
             <VehicleDetailView
               vehicleId={selectedVehicleId}
@@ -214,15 +238,21 @@ export default function App() {
               onSelectVehicle={(id) => setSelectedVehicleId(id)}
             />
           ))}
-        {activeTab === 'drivers' && <DriversView />}
-        {activeTab === 'routes' && <RoutesView />}
-        {activeTab === 'settlements' && (
+        {effectiveTab === 'drivers' && <DriversView />}
+        {effectiveTab === 'routes' && <RoutesView />}
+        {effectiveTab === 'settlements' && (
           <SettlementsView
             adminUid={user.uid}
-            onSelectDriverLogs={(driverId) => {
-              setLogPresetDriverId(driverId);
-              setActiveTab('logs');
-            }}
+            userRole={profile.role}
+            userName={profile.name || user.email}
+            onSelectDriverLogs={
+              isAccountingOnly
+                ? null
+                : (driverId) => {
+                    setLogPresetDriverId(driverId);
+                    setActiveTab('logs');
+                  }
+            }
           />
         )}
         </Suspense>
@@ -263,8 +293,8 @@ function AdminLoginScreen({ currentUser, currentProfile, onAdminCreated }) {
     setBusy(true);
     try {
       const cleanEmail = email.includes('@')
-        ? email.trim()
-        : `${email.trim()}@bhlogistics.local`;
+        ? email.trim().toLowerCase()
+        : `${email.trim().toLowerCase()}@bhlogistics.local`;
       await signInWithEmailAndPassword(auth, cleanEmail, password);
     } catch (_) {
       setError('이메일 또는 비밀번호가 틀렸어요. 다시 확인해 주세요.');
@@ -278,8 +308,8 @@ function AdminLoginScreen({ currentUser, currentProfile, onAdminCreated }) {
     setBusy(true);
     try {
       const cleanEmail = email.includes('@')
-        ? email.trim()
-        : `${email.trim()}@bhlogistics.local`;
+        ? email.trim().toLowerCase()
+        : `${email.trim().toLowerCase()}@bhlogistics.local`;
       let uid = currentUser?.uid;
       if (!uid) {
         if (!password || password.length < 6) {
@@ -323,14 +353,16 @@ function AdminLoginScreen({ currentUser, currentProfile, onAdminCreated }) {
     <div className="min-h-screen flex items-center justify-center bg-slate-900 p-6">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8">
         <div className="text-2xl font-black text-[#1E5EFF]">BH로지스틱스</div>
-        <h1 className="text-2xl font-bold mt-1">관리자 웹 로그인</h1>
+        <h1 className="text-2xl font-bold mt-1">관리자 · 경리 웹 로그인</h1>
         <p className="text-sm text-slate-500 mt-1">
-          관리자만 사용할 수 있어요 (Users.role === &apos;admin&apos;).
+          관리자(admin) 또는 경리(accounting) 계정으로 로그인할 수 있습니다.
         </p>
 
-        {currentUser && currentProfile?.role !== 'admin' && (
+        {currentUser &&
+          currentProfile?.role !== 'admin' &&
+          currentProfile?.role !== 'accounting' && (
           <div className="mt-4 p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-800 text-sm font-semibold">
-            관리자만 사용할 수 있어요. 아래 [관리자로 승격]을 누르거나 다른 계정으로
+            관리자 또는 경리 계정만 사용할 수 있어요. 아래 [관리자로 승격]을 누르거나 다른 계정으로
             로그인해 주세요.
           </div>
         )}

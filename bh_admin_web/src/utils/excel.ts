@@ -261,3 +261,92 @@ export async function exportMonthlySettlementExcel({
   const buffer = await wb.xlsx.writeBuffer();
   downloadBuffer(buffer, `BH로지스틱스_${yearMonth}_월결산.xlsx`);
 }
+
+// 경리 아침 확인용 세금계산서 발행 대기/완료 목록 엑셀 다운로드
+export async function exportTaxInvoiceExcel({
+  yearMonth,
+  items,
+}: {
+  yearMonth: string;
+  items: Array<{
+    categoryLabel: string;
+    refDate: string;
+    clientName: string;
+    bizNo?: string;
+    courseOrItem: string;
+    driverOrVehicle: string;
+    supplyAmount: number;
+    vatAmount: number;
+    totalAmount: number;
+    statusLabel: string;
+    issuedAtLabel?: string;
+    memo?: string;
+  }>;
+}) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'BH로지스틱스 경리·정산 시스템';
+  wb.created = new Date();
+
+  const ws = wb.addWorksheet('세금계산서_발행목록');
+  ws.columns = [
+    { header: '구분', key: 'categoryLabel' },
+    { header: '운행일/기준일', key: 'refDate' },
+    { header: '거래처명', key: 'clientName' },
+    { header: '사업자번호', key: 'bizNo' },
+    { header: '품목/운행코스', key: 'courseOrItem' },
+    { header: '기사/차량', key: 'driverOrVehicle' },
+    { header: '공급가액(원)', key: 'supplyAmount' },
+    { header: '부가세(10%)', key: 'vatAmount' },
+    { header: '합계금액(원)', key: 'totalAmount' },
+    { header: '발행상태', key: 'statusLabel' },
+    { header: '발행완료일', key: 'issuedAtLabel' },
+    { header: '비고', key: 'memo' },
+  ];
+
+  let sumSupply = 0;
+  let sumVat = 0;
+  let sumTotal = 0;
+
+  items.forEach((it) => {
+    const supply = Number(it.supplyAmount) || 0;
+    const vat = Number(it.vatAmount) || 0;
+    const total = Number(it.totalAmount) || 0;
+    sumSupply += supply;
+    sumVat += vat;
+    sumTotal += total;
+    ws.addRow({
+      categoryLabel: it.categoryLabel || '',
+      refDate: it.refDate || '',
+      clientName: it.clientName || '',
+      bizNo: it.bizNo || '',
+      courseOrItem: it.courseOrItem || '',
+      driverOrVehicle: it.driverOrVehicle || '',
+      supplyAmount: supply,
+      vatAmount: vat,
+      totalAmount: total,
+      statusLabel: it.statusLabel || '',
+      issuedAtLabel: it.issuedAtLabel || '',
+      memo: it.memo || '',
+    });
+  });
+
+  const totalRow = ws.addRow({
+    categoryLabel: '합계',
+    refDate: '',
+    clientName: `${items.length}건`,
+    bizNo: '',
+    courseOrItem: '',
+    driverOrVehicle: '',
+    supplyAmount: sumSupply,
+    vatAmount: sumVat,
+    totalAmount: sumTotal,
+    statusLabel: '',
+    issuedAtLabel: '',
+    memo: '',
+  });
+  totalRow.font = { bold: true };
+  styleWorksheet(ws, [7, 8, 9]);
+
+  const buffer = await wb.xlsx.writeBuffer();
+  downloadBuffer(buffer, `BH로지스틱스_${yearMonth}_세금계산서_발행목록.xlsx`);
+}
