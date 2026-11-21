@@ -147,13 +147,14 @@ export default function SettlementsView({
   adminUid,
   userRole = 'admin',
   userName = '관리자',
+  onNavigateRoutes,
   onSelectDriverLogs,
 }) {
   const isAccountingOnly = userRole === 'accounting';
   const defaultYm = kstOffsetDateStr(0).slice(0, 7);
 
   const [yearMonth, setYearMonth] = useState(defaultYm);
-  const [activeSubTab, setActiveSubTab] = useState('invoices'); // invoices | variable | monthly | summary
+  const [activeSubTab, setActiveSubTab] = useState('invoices'); // invoices | variable | payroll_summary
 
   const [logs, setLogs] = useState([]);
   const [routes, setRoutes] = useState([]);
@@ -174,10 +175,6 @@ export default function SettlementsView({
   const [dispDriverId, setDispDriverId] = useState('');
   const [dispTrips, setDispTrips] = useState([makeEmptyTrip(1)]);
   const [savingDispatch, setSavingDispatch] = useState(false);
-
-  // 월정액 거래처(노선) 계약 설정 편집 상태
-  const [routeEdits, setRouteEdits] = useState({});
-  const [savingRouteId, setSavingRouteId] = useState('');
 
   // 기사별 급여 정산 입력 편집 상태
   const [payrollEdits, setPayrollEdits] = useState({});
@@ -228,19 +225,6 @@ export default function SettlementsView({
       if (cfgSnap.exists() && cfgSnap.data()?.dieselPricePerL) {
         setDieselPrice(Number(cfgSnap.data().dieselPricePerL) || 1550);
       }
-
-      // 노선 계약 편집 상태 초기화
-      const initialRouteEdits = {};
-      routeList.forEach((r) => {
-        initialRouteEdits[r.id] = {
-          billingType: getRouteBillingType(r),
-          clientName: r.clientName || r.name || '',
-          bizNo: r.bizNo || '',
-          monthlyContractAmount: Number(r.monthlyContractAmount) || 0,
-          billingDay: Number(r.billingDay) || 31,
-        };
-      });
-      setRouteEdits(initialRouteEdits);
     } finally {
       setLoading(false);
     }
@@ -885,36 +869,6 @@ export default function SettlementsView({
     }
   };
 
-  // 월정액/노선 계약 설정 저장
-  const handleSaveRouteContract = async (routeId) => {
-    const edit = routeEdits[routeId];
-    if (!edit) return;
-    setSavingRouteId(routeId);
-    try {
-      await setDoc(
-        doc(db, 'Routes', routeId),
-        {
-          billingType: edit.billingType,
-          clientName: edit.clientName.trim(),
-          bizNo: edit.bizNo.trim(),
-          monthlyContractAmount:
-            edit.billingType === 'monthly'
-              ? Number(edit.monthlyContractAmount) || 0
-              : 0,
-          billingDay: Math.min(31, Math.max(1, Number(edit.billingDay) || 31)),
-          invoiceMode: edit.billingType === 'monthly' ? 'monthly' : 'per_trip',
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-      await loadAll();
-    } catch (err) {
-      alert(`노선 계약 저장 오류: ${err.message}`);
-    } finally {
-      setSavingRouteId('');
-    }
-  };
-
   // 기사별 급여 정산 저장
   const handleSaveDriverPayroll = async (row) => {
     const edit = payrollEdits[row.driverId] || {};
@@ -1320,7 +1274,7 @@ export default function SettlementsView({
         </div>
       </div>
 
-      {/* 4개 서브 탭 바 */}
+      {/* 3개 핵심 실무 서브 탭 바 */}
       <div className="flex flex-wrap gap-2 bg-white p-1.5 rounded-2xl border shadow-sm">
         {[
           {
@@ -1333,15 +1287,11 @@ export default function SettlementsView({
           },
           {
             id: 'variable',
-            label: `🚛 간선(변동형) 매출 비교 (${variableRecords.length}건)`,
+            label: `🚛 간선(변동형) 배차 · 매출 비교 (${variableRecords.length}건)`,
           },
           {
-            id: 'monthly',
-            label: `🏢 월정액 거래처 & 기사 급여 정산`,
-          },
-          {
-            id: 'summary',
-            label: `📊 전사 종합 손익 · 마감 · 경리계정`,
+            id: 'payroll_summary',
+            label: `💰 기사 급여 정산 · 전사 손익 · 마감`,
           },
         ].map((tab) => (
           <button
@@ -1680,15 +1630,21 @@ export default function SettlementsView({
                       ③ 월정액 거래처 정기 세금계산서 (25일 · 말일 등 거래처 전체 합계)
                     </h2>
                     <p className="text-xs text-slate-600 mt-0.5">
-                      계약금액과 결제일 설정은 [3. 월정액 거래처 & 기사 급여 정산] 탭에서 바꿀 수 있습니다.
+                      계약금액과 청구 기준일은 [6. 거래처 · 노선 · 계약] 기준표에서 관리됩니다.
                     </p>
                   </div>
-                  <button
-                    onClick={() => setActiveSubTab('monthly')}
-                    className="px-3 py-1.5 rounded-xl bg-white border border-teal-300 text-teal-800 font-bold text-xs hover:bg-teal-50"
-                  >
-                    계약금액·결제일 설정하러 가기 →
-                  </button>
+                  {onNavigateRoutes ? (
+                    <button
+                      onClick={onNavigateRoutes}
+                      className="px-3 py-1.5 rounded-xl bg-white border border-teal-300 text-teal-800 font-bold text-xs hover:bg-teal-50"
+                    >
+                      6. 거래처·계약 설정 바로가기 →
+                    </button>
+                  ) : (
+                    <span className="text-[11px] font-bold text-teal-800 bg-white/80 px-2.5 py-1 rounded-lg border border-teal-200">
+                      계약금 변경은 관리자에게 요청
+                    </span>
+                  )}
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[840px] text-sm text-left">
@@ -1842,43 +1798,77 @@ export default function SettlementsView({
 
               {/* 간선 전용 차트 2종 */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="bg-white p-5 rounded-2xl shadow-sm border h-72">
+                <div className="bg-white p-5 rounded-2xl shadow-sm border h-72 flex flex-col">
                   <div className="font-bold text-sm mb-2">
                     (1) 간선 기사별 매출 비교 (월정액 기사 제외)
                   </div>
-                  <ResponsiveContainer width="100%" height="90%">
-                    <BarChart data={variableSummary.driverChart}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="driverName" />
-                      <YAxis />
-                      <Tooltip
-                        formatter={(v) => [`${Number(v).toLocaleString()}원`, '매출']}
-                      />
-                      <Bar dataKey="supplyAmount" name="공급가액(원)" fill="#1E5EFF" />
-                    </BarChart>
-                  </ResponsiveContainer>
+                  {variableSummary.driverChart.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center text-xs text-slate-400 font-semibold">
+                      이번 달 간선 매출 데이터가 없습니다.
+                    </div>
+                  ) : (
+                    <div className="flex-1 min-h-0">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={variableSummary.driverChart}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="driverName" tick={{ fontSize: 12 }} />
+                          <YAxis
+                            width={52}
+                            tick={{ fontSize: 11 }}
+                            tickFormatter={(v) =>
+                              v >= 10000 ? `${Math.round(v / 10000)}만` : v
+                            }
+                          />
+                          <Tooltip
+                            formatter={(v) => [`${Number(v).toLocaleString()}원`, '매출']}
+                          />
+                          <Bar
+                            dataKey="supplyAmount"
+                            name="공급가액(원)"
+                            fill="#1E5EFF"
+                            radius={[6, 6, 0, 0]}
+                          />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
                 </div>
 
-                <div className="bg-white p-5 rounded-2xl shadow-sm border h-72">
+                <div className="bg-white p-5 rounded-2xl shadow-sm border h-72 flex flex-col">
                   <div className="font-bold text-sm mb-2">
                     (2) 간선 일별 매출 추이
                   </div>
-                  <ResponsiveContainer width="100%" height="90%">
-                    <LineChart data={variableSummary.dateChart}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="date" />
-                      <YAxis />
-                      <Tooltip
-                        formatter={(v) => [`${Number(v).toLocaleString()}원`, '매출']}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="매출"
-                        stroke="#00796B"
-                        strokeWidth={3}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                  {variableSummary.dateChart.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center text-xs text-slate-400 font-semibold">
+                      이번 달 일별 간선 추이 데이터가 없습니다.
+                    </div>
+                  ) : (
+                    <div className="flex-1 min-h-0">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={variableSummary.dateChart}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                          <YAxis
+                            width={52}
+                            tick={{ fontSize: 11 }}
+                            tickFormatter={(v) =>
+                              v >= 10000 ? `${Math.round(v / 10000)}만` : v
+                            }
+                          />
+                          <Tooltip
+                            formatter={(v) => [`${Number(v).toLocaleString()}원`, '매출']}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="매출"
+                            stroke="#00796B"
+                            strokeWidth={3}
+                            dot={{ r: 3 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -2030,174 +2020,49 @@ export default function SettlementsView({
           )}
 
           {/* ================================================================
-              TAB 3: 월정액 거래처 매출 설정 & 기사별 급여 정산 (휴무·추가탕)
+              TAB 3: 기사 급여 정산 · 전사 종합 손익 · 마감 · 경리계정
           ================================================================= */}
-          {activeSubTab === 'monthly' && (
-            <div className="space-y-8">
-              {/* Section A: 거래처/노선 계약 금액 및 결제일 설정 */}
-              <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
-                <div className="p-4 border-b bg-teal-50/60">
-                  <h2 className="font-black text-slate-900">
-                    A. 거래처 · 노선별 월정액 계약금액 & 결제일(세금계산서 기준일) 설정
-                  </h2>
-                  <p className="text-xs text-slate-600 mt-0.5">
-                    대전집배점, 이마트, GS, 빽다방, 교촌, 조인(알운반) 등은 <b>[월정액 고정형]</b>으로 두고 거래처 월 전체 계약 합계액과 청구 기준일(예: 25일, 31=말일)을 입력하세요.
-                  </p>
+          {activeSubTab === 'payroll_summary' && (
+            <div className="space-y-6">
+              {missingCheckoutCount > 0 && (
+                <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 font-bold text-sm">
+                  ⚠️ 퇴근 누락이 {missingCheckoutCount}건 있어요. 마감 전에 확인해 주세요.
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[960px] text-sm text-left">
-                    <thead className="bg-slate-50 border-b font-bold text-xs">
-                      <tr>
-                        <th className="p-3">노선명</th>
-                        <th className="p-3">정산 방식</th>
-                        <th className="p-3">거래처명 (계산서 발행처)</th>
-                        <th className="p-3">사업자번호 (선택)</th>
-                        <th className="p-3">월 전체 계약금액 (원)</th>
-                        <th className="p-3">청구 기준일</th>
-                        <th className="p-3">저장</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {routes.map((r) => {
-                        const edit = routeEdits[r.id] || {
-                          billingType: getRouteBillingType(r),
-                          clientName: r.name,
-                          bizNo: '',
-                          monthlyContractAmount: 0,
-                          billingDay: 31,
-                        };
-                        const isMonthly = edit.billingType === 'monthly';
-                        return (
-                          <tr key={r.id} className="hover:bg-slate-50">
-                            <td className="p-3 font-bold text-slate-900 whitespace-nowrap">
-                              {r.name}
-                            </td>
-                            <td className="p-3">
-                              <select
-                                value={edit.billingType}
-                                onChange={(e) =>
-                                  setRouteEdits((prev) => ({
-                                    ...prev,
-                                    [r.id]: {
-                                      ...edit,
-                                      billingType: e.target.value,
-                                    },
-                                  }))
-                                }
-                                className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold ${
-                                  isMonthly
-                                    ? 'bg-teal-50 text-teal-800 border-teal-300'
-                                    : 'bg-blue-50 text-[#1E5EFF] border-blue-300'
-                                }`}
-                              >
-                                <option value="monthly">월정액 고정형</option>
-                                <option value="variable">간선 변동형</option>
-                              </select>
-                            </td>
-                            <td className="p-3">
-                              <input
-                                value={edit.clientName}
-                                onChange={(e) =>
-                                  setRouteEdits((prev) => ({
-                                    ...prev,
-                                    [r.id]: {
-                                      ...edit,
-                                      clientName: e.target.value,
-                                    },
-                                  }))
-                                }
-                                className="w-40 px-2.5 py-1.5 rounded-lg border text-xs font-semibold"
-                              />
-                            </td>
-                            <td className="p-3">
-                              <input
-                                placeholder="000-00-00000"
-                                value={edit.bizNo}
-                                onChange={(e) =>
-                                  setRouteEdits((prev) => ({
-                                    ...prev,
-                                    [r.id]: { ...edit, bizNo: e.target.value },
-                                  }))
-                                }
-                                className="w-32 px-2.5 py-1.5 rounded-lg border text-xs"
-                              />
-                            </td>
-                            <td className="p-3">
-                              {isMonthly ? (
-                                <input
-                                  type="text"
-                                  inputMode="numeric"
-                                  value={formatNumberWithCommas(
-                                    edit.monthlyContractAmount
-                                  )}
-                                  onChange={(e) =>
-                                    setRouteEdits((prev) => ({
-                                      ...prev,
-                                      [r.id]: {
-                                        ...edit,
-                                        monthlyContractAmount:
-                                          parseNumberWithoutCommas(e.target.value),
-                                      },
-                                    }))
-                                  }
-                                  className="w-36 px-2.5 py-1.5 rounded-lg border text-right font-black text-teal-700 text-xs"
-                                />
-                              ) : (
-                                <span className="text-xs text-slate-400">
-                                  매일 코스별 입력
-                                </span>
-                              )}
-                            </td>
-                            <td className="p-3">
-                              {isMonthly ? (
-                                <select
-                                  value={edit.billingDay}
-                                  onChange={(e) =>
-                                    setRouteEdits((prev) => ({
-                                      ...prev,
-                                      [r.id]: {
-                                        ...edit,
-                                        billingDay: Number(e.target.value),
-                                      },
-                                    }))
-                                  }
-                                  className="px-2.5 py-1.5 rounded-lg border text-xs font-bold bg-white"
-                                >
-                                  <option value={25}>매월 25일</option>
-                                  <option value={31}>매월 말일</option>
-                                  <option value={10}>매월 10일</option>
-                                  <option value={15}>매월 15일</option>
-                                  <option value={20}>매월 20일</option>
-                                </select>
-                              ) : (
-                                <span className="text-xs text-slate-400">
-                                  건별/묶음
-                                </span>
-                              )}
-                            </td>
-                            <td className="p-3">
-                              <button
-                                onClick={() => handleSaveRouteContract(r.id)}
-                                disabled={savingRouteId === r.id}
-                                className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs whitespace-nowrap"
-                              >
-                                {savingRouteId === r.id ? '저장중...' : '저장'}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <KpiCard
+                  title="전사 월 총매출 (공급가 합계)"
+                  value={`${combinedTotalRevenue.toLocaleString()}원`}
+                  sub={`${yearMonth} 간선 + 월정액`}
+                  color="text-[#1E5EFF]"
+                />
+                <KpiCard
+                  title="간선(변동형) 매출 합계"
+                  value={`${variableSummary.totalSupply.toLocaleString()}원`}
+                  sub={`${variableSummary.recordCount}일 · ${variableSummary.tripCount}탕`}
+                  color="text-indigo-600"
+                />
+                <KpiCard
+                  title="월정액(고정형) 계약 매출"
+                  value={`${monthlyTotalRevenue.toLocaleString()}원`}
+                  sub={`월정액 거래처 ${monthlyRouteSummaries.length}곳`}
+                  color="text-teal-700"
+                />
+                <KpiCard
+                  title="예상 운행 손익 (주유·정비 차감)"
+                  value={`${estimatedOperatingProfit.toLocaleString()}원`}
+                  sub={`주유 ${totalFuelCost.toLocaleString()}원 · 정비 ${monthMaintCost.toLocaleString()}원`}
+                  color="text-emerald-600"
+                />
               </div>
 
-              {/* Section B: 기사별 월 급여 정산 (출근·휴무 + 추가 탕 수당 / 휴무 차감) */}
+              {/* 기사별 월 급여 정산 (출근·휴무 + 추가 탕 수당 / 휴무 차감) */}
               <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
                 <div className="p-4 border-b flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h2 className="font-black text-slate-900">
-                      B. 기사별 월 급여 정산 (출근 · 휴무일수 + 추가 탕 수당 / 휴무 차감)
+                      기사별 월 급여 정산 (출근 · 휴무일수 + 추가 탕 수당 / 휴무 차감)
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
                       출근 일수와 앱에 등록된 휴무일수를 바탕으로 기본급·추가 탕 수당(+)·휴무 차감(-)을 입력해 최종 급여를 확정합니다.
@@ -2402,46 +2267,6 @@ export default function SettlementsView({
                     </tbody>
                   </table>
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* ================================================================
-              TAB 4: 전사 종합 손익 · 경유 단가 · 마감 · 경리 전용 계정 관리
-          ================================================================= */}
-          {activeSubTab === 'summary' && (
-            <div className="space-y-6">
-              {missingCheckoutCount > 0 && (
-                <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 font-bold text-sm">
-                  ⚠️ 퇴근 누락이 {missingCheckoutCount}건 있어요. 마감 전에 확인해 주세요.
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <KpiCard
-                  title="전사 월 총매출 (공급가 합계)"
-                  value={`${combinedTotalRevenue.toLocaleString()}원`}
-                  sub={`${yearMonth} 간선 + 월정액`}
-                  color="text-[#1E5EFF]"
-                />
-                <KpiCard
-                  title="간선(변동형) 매출 합계"
-                  value={`${variableSummary.totalSupply.toLocaleString()}원`}
-                  sub={`${variableSummary.recordCount}일 · ${variableSummary.tripCount}탕`}
-                  color="text-indigo-600"
-                />
-                <KpiCard
-                  title="월정액(고정형) 계약 매출"
-                  value={`${monthlyTotalRevenue.toLocaleString()}원`}
-                  sub={`월정액 거래처 ${monthlyRouteSummaries.length}곳`}
-                  color="text-teal-700"
-                />
-                <KpiCard
-                  title="예상 운행 손익 (주유·정비 차감)"
-                  value={`${estimatedOperatingProfit.toLocaleString()}원`}
-                  sub={`주유 ${totalFuelCost.toLocaleString()}원 · 정비 ${monthMaintCost.toLocaleString()}원`}
-                  color="text-emerald-600"
-                />
               </div>
 
               {/* 마감 & 종합 엑셀 바 */}

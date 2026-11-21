@@ -165,7 +165,7 @@ export default function App() {
                 }}
               />
               <NavItem
-                label="6. 노선 · 단가 관리"
+                label="6. 거래처 · 노선 · 계약"
                 active={effectiveTab === 'routes'}
                 onClick={() => {
                   setSelectedVehicleId(null);
@@ -245,6 +245,9 @@ export default function App() {
             adminUid={user.uid}
             userRole={profile.role}
             userName={profile.name || user.email}
+            onNavigateRoutes={
+              isAccountingOnly ? null : () => setActiveTab('routes')
+            }
             onSelectDriverLogs={
               isAccountingOnly
                 ? null
