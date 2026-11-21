@@ -164,8 +164,8 @@ async function callFirebaseAI({ promptText, images }) {
   ];
 
   const backends = [
-    { label: 'VertexAI', backend: new VertexAIBackend() },
     { label: 'GoogleAI', backend: new GoogleAIBackend() },
+    { label: 'VertexAI', backend: new VertexAIBackend() },
   ];
   const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
 
@@ -189,6 +189,29 @@ async function callFirebaseAI({ promptText, images }) {
     }
   }
   throw lastErr || new Error('Firebase AI 호출 실패');
+}
+
+function mapFriendlyAiError(primaryErr, secondaryErr) {
+  const combined = `${primaryErr?.message || primaryErr || ''} ${secondaryErr?.message || secondaryErr || ''}`;
+  if (
+    /prepayment credits are depleted/i.test(combined) ||
+    /\b402\b/.test(combined) ||
+    /App Check token is invalid/i.test(combined) ||
+    /\b401\b/.test(combined)
+  ) {
+    return new Error(
+      '현재 Firebase 기본 프로젝트는 App Check 보안 및 AI Studio 선불 크레딧(0원) 제한이 걸려 있습니다.\n' +
+        '아래 [⚙️ AI 키 설정]에서 Google AI Studio 무료 키(새 프로젝트에서 발급)를 1번만 저장해 주시면 무료로 바로 작동합니다.'
+    );
+  }
+  if (/genai-config-not-found|genai config/i.test(combined)) {
+    return new Error(
+      'Firebase AI Logic 초기 설정이 아직 완료되지 않았습니다.\n' +
+        '① Firebase 콘솔 → AI Logic 에서 [시작하기]를 1번 누르시거나,\n' +
+        '② 아래 [⚙️ AI 키 설정]에 무료 Google AI Studio 키를 입력해 주세요.'
+    );
+  }
+  return secondaryErr || primaryErr;
 }
 
 export async function analyzeDispatchWithAI({
@@ -217,24 +240,35 @@ export async function analyzeDispatchWithAI({
   let rawResponse = '';
   const trimmedKey = String(customApiKey || '').trim();
   if (trimmedKey) {
-    rawResponse = await callGeminiWithApiKey({
-      apiKey: trimmedKey,
-      promptText,
-      images,
-    });
-  } else {
     try {
-      rawResponse = await callFirebaseAI({ promptText, images });
+      rawResponse = await callGeminiWithApiKey({
+        apiKey: trimmedKey,
+        promptText,
+        images,
+      });
     } catch (err) {
-      const msg = String(err?.message || err || '');
-      if (msg.includes('genai-config-not-found') || msg.includes('genai config')) {
-        throw new Error(
-          'Firebase AI Logic 초기 설정이 아직 완료되지 않았습니다.\n' +
-            '① Firebase 콘솔 → AI Logic 에서 [시작하기]를 1번 누르시거나,\n' +
-            '② 아래 [⚙️ AI 키 설정]에 무료 Google AI Studio 키를 입력해 주세요.'
-        );
+      throw mapFriendlyAiError(err);
+    }
+  } else {
+    const appApiKey = String(app?.options?.apiKey || '').trim();
+    let apiKeyErr = null;
+    if (appApiKey) {
+      try {
+        rawResponse = await callGeminiWithApiKey({
+          apiKey: appApiKey,
+          promptText,
+          images,
+        });
+      } catch (err) {
+        apiKeyErr = err;
       }
-      throw err;
+    }
+    if (!rawResponse) {
+      try {
+        rawResponse = await callFirebaseAI({ promptText, images });
+      } catch (firebaseErr) {
+        throw mapFriendlyAiError(apiKeyErr, firebaseErr);
+      }
     }
   }
 

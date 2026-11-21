@@ -1509,7 +1509,9 @@ export default function SettlementsView({
     } catch (err) {
       const msg = err?.message || 'AI 분석 중 오류가 발생했습니다.';
       setAiStatusMsg(`⚠️ ${msg}`);
-      if (/API 키|AI Logic|시작하기|초기화/.test(msg)) {
+      if (
+        /API 키|AI Logic|시작하기|초기화|크레딧|App Check|무료/.test(msg)
+      ) {
         setShowAiKeyBox(true);
       }
     } finally {
@@ -3869,7 +3871,7 @@ export default function SettlementsView({
 
                   {aiStatusMsg && (
                     <div
-                      className={`p-2 rounded-lg text-[11px] font-bold ${
+                      className={`p-2 rounded-lg text-[11px] font-bold whitespace-pre-line ${
                         aiStatusMsg.startsWith('⚠️')
                           ? 'bg-red-50 text-red-700 border border-red-200'
                           : aiStatusMsg.startsWith('✅')
@@ -3883,11 +3885,21 @@ export default function SettlementsView({
 
                   {showAiKeyBox && (
                     <div className="p-2.5 rounded-xl bg-white border border-slate-200 space-y-2 text-[11px]">
-                      <div className="font-bold text-slate-800">
-                        Gemini API 키 설정 (선택 · 관리자/경리만 접근 가능)
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-bold text-slate-800">
+                          Gemini API 키 설정 (관리자·경리만 접근 가능)
+                        </div>
+                        <a
+                          href="https://aistudio.google.com/apikey"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold hover:bg-indigo-100"
+                        >
+                          🔑 무료 API 키 발급 바로가기 ↗
+                        </a>
                       </div>
-                      <p className="text-slate-500">
-                        Firebase 콘솔 → AI Logic에서 [시작하기]를 눌렀으면 키 없이 바로 작동합니다. Google AI Studio 무료 API 키를 직접 쓰려면 아래에 입력해 저장하세요.
+                      <p className="text-slate-600 leading-relaxed">
+                        <b>Google AI Studio → [Create API key] → [Create API key in new project(새 프로젝트)]</b>로 발급받으면 결제/App Check 없이 무료로 즉시 작동합니다. 발급된 <code>AIza...</code> 키를 아래에 1번만 저장해 주세요.
                       </p>
                       <div className="flex gap-1.5">
                         <input
