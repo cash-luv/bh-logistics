@@ -177,35 +177,47 @@ class GpsTrackerService {
       _sub = Geolocator.getPositionStream(
         locationSettings: locationSettings,
       ).listen((Position pos) async {
-        if (pos.accuracy > 150) return;
+        if (pos.accuracy > 40) return;
 
-        if (_lastLat != null && _lastLng != null) {
-          final deltaMeters = Geolocator.distanceBetween(
-            _lastLat!,
-            _lastLng!,
-            pos.latitude,
-            pos.longitude,
-          );
-          // 정상 주행 범위 (30m 이상 ~ 50km 이하 단일 점프)
-          if (deltaMeters >= 30 && deltaMeters <= 50000) {
-            _accumulatedMeters += deltaMeters;
-            await prefs.setDouble(_kAccumMeters, _accumulatedMeters);
-
-            // 고속도로 등에서 5분이 되기 전에 5km 이상 주행한 경우 즉시 체크포인트 기록
-            if (_accumulatedMeters - _lastCheckpointMeters >= 5000) {
-              await _recordCheckpoint(
-                lat: pos.latitude,
-                lng: pos.longitude,
-                reason: '고속 이동',
-              );
-            }
-          }
+        if (_lastLat == null || _lastLng == null) {
+          _lastLat = pos.latitude;
+          _lastLng = pos.longitude;
+          await prefs.setDouble(_kLastLat, pos.latitude);
+          await prefs.setDouble(_kLastLng, pos.longitude);
+          return;
         }
 
-        _lastLat = pos.latitude;
-        _lastLng = pos.longitude;
-        await prefs.setDouble(_kLastLat, pos.latitude);
-        await prefs.setDouble(_kLastLng, pos.longitude);
+        final deltaMeters = Geolocator.distanceBetween(
+          _lastLat!,
+          _lastLng!,
+          pos.latitude,
+          pos.longitude,
+        );
+        final minMove =
+            pos.accuracy > 0 ? (pos.accuracy * 1.5).clamp(50.0, 150.0) : 50.0;
+        final isMovingSlowOrStopped =
+            pos.speed >= 0 && pos.speed < 1.0 && deltaMeters < 150;
+
+        // 정상 주행 범위 (최소 이동거리 이상 ~ 50km 이하 단일 점프, 정차 드리프트 제외)
+        if (!isMovingSlowOrStopped &&
+            deltaMeters >= minMove &&
+            deltaMeters <= 50000) {
+          _accumulatedMeters += deltaMeters;
+          _lastLat = pos.latitude;
+          _lastLng = pos.longitude;
+          await prefs.setDouble(_kAccumMeters, _accumulatedMeters);
+          await prefs.setDouble(_kLastLat, pos.latitude);
+          await prefs.setDouble(_kLastLng, pos.longitude);
+
+          // 고속도로 등에서 5분이 되기 전에 5km 이상 주행한 경우 즉시 체크포인트 기록
+          if (_accumulatedMeters - _lastCheckpointMeters >= 5000) {
+            await _recordCheckpoint(
+              lat: pos.latitude,
+              lng: pos.longitude,
+              reason: '고속 이동',
+            );
+          }
+        }
       }, onError: (_) {});
 
       // 2. 5분 주기 타이머: 정차/대기(쿠팡 등) 및 일반 주행 상태를 5분마다 꼬박꼬박 기록
@@ -246,13 +258,43 @@ class GpsTrackerService {
 
       if (curLat == null || curLng == null) return;
 
+      double? directSegMeters;
+      if (_timeline.isNotEmpty) {
+        final prevLat = (_timeline.last['lat'] as num?)?.toDouble();
+        final prevLng = (_timeline.last['lng'] as num?)?.toDouble();
+        if (prevLat != null && prevLng != null) {
+          directSegMeters = Geolocator.distanceBetween(
+            prevLat,
+            prevLng,
+            curLat,
+            curLng,
+          );
+        }
+      }
+
+      final double rawDeltaMeters =
+          (_accumulatedMeters - _lastCheckpointMeters).clamp(0.0, double.infinity);
+      if (directSegMeters != null) {
+        if (directSegMeters < 150) {
+          _accumulatedMeters = _lastCheckpointMeters;
+        } else {
+          final double clampedDelta = rawDeltaMeters.clamp(
+            directSegMeters,
+            directSegMeters * 1.20,
+          );
+          _accumulatedMeters = _lastCheckpointMeters + clampedDelta;
+        }
+      }
+
       final deltaMeters = _accumulatedMeters - _lastCheckpointMeters;
       final int cumKmVal = _accumulatedMeters >= 100
           ? (_accumulatedMeters / 1000.0).round().clamp(1, 99999)
           : 0;
 
       // 직전 기록 대비 이동 거리가 150m 미만이면 '정차 / 대기', 150m 이상이면 '운행 중'으로 표시
-      final bool isStationary = deltaMeters < 150;
+      final bool isStationary =
+          (directSegMeters != null && directSegMeters < 150) ||
+          deltaMeters < 150;
       final String type = isStationary ? '정차 / 대기' : '운행 중';
 
       // 주소 변환 (실패해도 안전하게 좌표 또는 기본명 사용)
@@ -283,6 +325,7 @@ class GpsTrackerService {
       });
 
       _lastCheckpointMeters = _accumulatedMeters;
+      await prefs.setDouble(_kAccumMeters, _accumulatedMeters);
       await prefs.setDouble(_kLastCheckpointMeters, _lastCheckpointMeters);
       await prefs.setString(_kTimelineList, jsonEncode(_timeline));
     } catch (_) {
@@ -515,17 +558,26 @@ class GpsTrackerService {
       }
     }
 
-    if (_lastLat != null &&
-        _lastLng != null &&
+    final double? tailRefLat = _lastLat ??
+        (_timeline.isNotEmpty
+            ? (_timeline.last['lat'] as num?)?.toDouble()
+            : null);
+    final double? tailRefLng = _lastLng ??
+        (_timeline.isNotEmpty
+            ? (_timeline.last['lng'] as num?)?.toDouble()
+            : null);
+
+    if (tailRefLat != null &&
+        tailRefLng != null &&
         endLat != null &&
         endLng != null) {
       final tailMeters = Geolocator.distanceBetween(
-        _lastLat!,
-        _lastLng!,
+        tailRefLat,
+        tailRefLng,
         endLat,
         endLng,
       );
-      if (tailMeters >= 50 && tailMeters <= 50000) {
+      if (tailMeters >= 150 && tailMeters <= 50000) {
         _accumulatedMeters += tailMeters;
       }
     } else if (_accumulatedMeters == 0.0 &&
@@ -539,14 +591,20 @@ class GpsTrackerService {
         endLat,
         endLng,
       );
-      if (directMeters >= 50 && directMeters <= 50000) {
+      if (directMeters >= 150 && directMeters <= 50000) {
         _accumulatedMeters = directMeters;
       }
     }
 
-    final totalKm = _accumulatedMeters >= 100
+    final int lastTimelineKm = _timeline.isNotEmpty
+        ? ((_timeline.last['cumKm'] as num?)?.toInt() ?? 0)
+        : 0;
+    int totalKm = _accumulatedMeters >= 100
         ? (_accumulatedMeters / 1000.0).round().clamp(1, 99999)
         : 0;
+    if (totalKm < lastTimelineKm) {
+      totalKm = lastTimelineKm;
+    }
 
     final finalTimeline = List<Map<String, dynamic>>.from(_timeline);
 

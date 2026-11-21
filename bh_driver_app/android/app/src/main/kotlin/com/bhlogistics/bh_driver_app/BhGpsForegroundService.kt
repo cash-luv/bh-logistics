@@ -273,35 +273,78 @@ class BhGpsForegroundService : Service(), LocationListener {
 
     override fun onLocationChanged(location: Location) {
         if (!getIsActive(this)) return
-        if (location.hasAccuracy() && location.accuracy > 150f) return
+
+        val nowMs = System.currentTimeMillis()
+        val isGps = location.provider == LocationManager.GPS_PROVIDER
 
         var shouldRecordFastCheckpoint = false
         synchronized(stateLock) {
             val prefs = prefs(this)
             if (!prefs.getBoolean(KEY_IS_ACTIVE, false)) return
 
+            if (isGps && (!location.hasAccuracy() || location.accuracy <= 65f)) {
+                prefs.edit().putLong(KEY_LAST_GPS_PROVIDER_TIME_MS, nowMs).apply()
+            }
+
+            if (!isGps) {
+                val lastGpsMs = prefs.getLong(KEY_LAST_GPS_PROVIDER_TIME_MS, 0L)
+                if (nowMs - lastGpsMs < 120_000L) {
+                    return
+                }
+            }
+
+            if (location.hasAccuracy() && location.accuracy > MAX_ACCURACY_METERS) {
+                return
+            }
+
             var accumMeters = prefs.getString(KEY_ACCUM_METERS, "0.0")?.toDoubleOrNull() ?: 0.0
             val lastChkMeters = prefs.getString(KEY_LAST_CHK_METERS, "0.0")?.toDoubleOrNull() ?: 0.0
             val prevLat = prefs.getString(KEY_LAST_LAT, null)?.toDoubleOrNull()
             val prevLng = prefs.getString(KEY_LAST_LNG, null)?.toDoubleOrNull()
+            val prevFixMs = prefs.getLong(KEY_LAST_FIX_TIME_MS, 0L)
 
-            if (prevLat != null && prevLng != null) {
-                val results = FloatArray(1)
-                Location.distanceBetween(prevLat, prevLng, location.latitude, location.longitude, results)
-                val deltaMeters = results[0]
-                if (deltaMeters in 30f..50000f) {
-                    accumMeters += deltaMeters
-                    if (accumMeters - lastChkMeters >= 5000.0) {
-                        shouldRecordFastCheckpoint = true
-                    }
-                }
+            if (prevLat == null || prevLng == null) {
+                prefs.edit()
+                    .putString(KEY_LAST_LAT, location.latitude.toString())
+                    .putString(KEY_LAST_LNG, location.longitude.toString())
+                    .putLong(KEY_LAST_FIX_TIME_MS, nowMs)
+                    .apply()
+                return
             }
 
-            prefs.edit()
-                .putString(KEY_ACCUM_METERS, accumMeters.toString())
-                .putString(KEY_LAST_LAT, location.latitude.toString())
-                .putString(KEY_LAST_LNG, location.longitude.toString())
-                .apply()
+            val results = FloatArray(1)
+            Location.distanceBetween(prevLat, prevLng, location.latitude, location.longitude, results)
+            val deltaMeters = results[0]
+            val minMove = if (location.hasAccuracy()) {
+                maxOf(MIN_MOVE_METERS, location.accuracy * 1.5f)
+            } else {
+                MIN_MOVE_METERS
+            }
+            val isMovingSlowOrStopped =
+                location.hasSpeed() && location.speed < 1.0f && deltaMeters < 150f
+            val dtSec = if (prevFixMs > 0L) {
+                ((nowMs - prevFixMs) / 1000.0).coerceAtLeast(1.0)
+            } else {
+                15.0
+            }
+            val impliedKmh = (deltaMeters / 1000.0) / (dtSec / 3600.0)
+
+            if (!isMovingSlowOrStopped &&
+                deltaMeters >= minMove &&
+                deltaMeters <= 50000f &&
+                impliedKmh <= MAX_SPEED_KMH
+            ) {
+                accumMeters += deltaMeters
+                if (accumMeters - lastChkMeters >= 5000.0) {
+                    shouldRecordFastCheckpoint = true
+                }
+                prefs.edit()
+                    .putString(KEY_ACCUM_METERS, accumMeters.toString())
+                    .putString(KEY_LAST_LAT, location.latitude.toString())
+                    .putString(KEY_LAST_LNG, location.longitude.toString())
+                    .putLong(KEY_LAST_FIX_TIME_MS, nowMs)
+                    .apply()
+            }
         }
 
         if (shouldRecordFastCheckpoint) {
@@ -374,13 +417,39 @@ class BhGpsForegroundService : Service(), LocationListener {
 
             if (timeline.length() >= MAX_TIMELINE_POINTS) return
 
+            var directSegMeters: Double? = null
+            if (timeline.length() > 0) {
+                val prevEntry = timeline.optJSONObject(timeline.length() - 1)
+                val pLat = prevEntry?.optDouble("lat", Double.NaN)
+                val pLng = prevEntry?.optDouble("lng", Double.NaN)
+                if (pLat != null && pLng != null && !pLat.isNaN() && !pLng.isNaN()) {
+                    val res = FloatArray(1)
+                    Location.distanceBetween(pLat, pLng, finalLat, finalLng, res)
+                    directSegMeters = res[0].toDouble()
+                }
+            }
+
+            val rawDeltaMeters = (accumMetersSnapshot - lastChkSnapshot).coerceAtLeast(0.0)
+            if (directSegMeters != null) {
+                accumMetersSnapshot = if (directSegMeters < 150.0) {
+                    lastChkSnapshot
+                } else {
+                    val clampedDelta = rawDeltaMeters.coerceIn(
+                        directSegMeters,
+                        directSegMeters * 1.20
+                    )
+                    lastChkSnapshot + clampedDelta
+                }
+            }
+
             val deltaMeters = accumMetersSnapshot - lastChkSnapshot
             val cumKm = if (accumMetersSnapshot >= 100.0) {
                 (accumMetersSnapshot / 1000.0).roundToInt().coerceIn(1, 99999)
             } else {
                 0
             }
-            val isStationary = deltaMeters < 150.0
+            val isStationary =
+                (directSegMeters != null && directSegMeters < 150.0) || deltaMeters < 150.0
             val type = if (isStationary) "정차 / 대기" else "운행 중"
             val address = if (resolvedAddr.isNotEmpty()) {
                 resolvedAddr
@@ -412,6 +481,7 @@ class BhGpsForegroundService : Service(), LocationListener {
             timeline.put(entry)
 
             p.edit()
+                .putString(KEY_ACCUM_METERS, accumMetersSnapshot.toString())
                 .putString(KEY_LAST_CHK_METERS, accumMetersSnapshot.toString())
                 .putString(KEY_TIMELINE_JSON, timeline.toString())
                 .apply()
@@ -478,8 +548,14 @@ class BhGpsForegroundService : Service(), LocationListener {
         private const val KEY_LAST_CHK_METERS = "last_chk_meters"
         private const val KEY_LAST_LAT = "last_lat"
         private const val KEY_LAST_LNG = "last_lng"
+        private const val KEY_LAST_FIX_TIME_MS = "last_fix_time_ms"
+        private const val KEY_LAST_GPS_PROVIDER_TIME_MS = "last_gps_provider_time_ms"
         private const val KEY_TIMELINE_JSON = "timeline_json"
         private const val KEY_IS_ACTIVE = "is_active"
+
+        private const val MAX_ACCURACY_METERS = 40f
+        private const val MIN_MOVE_METERS = 50f
+        private const val MAX_SPEED_KMH = 150.0
 
         private const val NOTIFICATION_CHANNEL_ID = "bh_gps_running_channel_v2"
         private const val NOTIFICATION_ID = 88415
@@ -551,10 +627,13 @@ class BhGpsForegroundService : Service(), LocationListener {
                     .putString(KEY_LAST_CHK_METERS, "0.0")
                     .putString(KEY_TIMELINE_JSON, timeline.toString())
                     .putBoolean(KEY_IS_ACTIVE, true)
+                    .remove(KEY_LAST_FIX_TIME_MS)
+                    .remove(KEY_LAST_GPS_PROVIDER_TIME_MS)
 
                 if (initialLat != null && initialLng != null) {
                     editor.putString(KEY_LAST_LAT, initialLat.toString())
                     editor.putString(KEY_LAST_LNG, initialLng.toString())
+                    editor.putLong(KEY_LAST_FIX_TIME_MS, System.currentTimeMillis())
                 } else {
                     editor.remove(KEY_LAST_LAT)
                     editor.remove(KEY_LAST_LNG)
@@ -618,6 +697,8 @@ class BhGpsForegroundService : Service(), LocationListener {
                     .remove(KEY_LAST_CHK_METERS)
                     .remove(KEY_LAST_LAT)
                     .remove(KEY_LAST_LNG)
+                    .remove(KEY_LAST_FIX_TIME_MS)
+                    .remove(KEY_LAST_GPS_PROVIDER_TIME_MS)
                     .remove(KEY_WORK_DATE)
                     .remove(KEY_TIMELINE_JSON)
                     .apply()
