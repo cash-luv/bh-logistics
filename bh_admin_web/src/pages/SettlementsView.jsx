@@ -251,7 +251,13 @@ function TripCardEditor({
   };
 
   return (
-    <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-2.5 text-xs shadow-sm">
+    <div
+      className={`p-3 rounded-xl border space-y-2.5 text-xs shadow-sm transition ${
+        isFixedGansen
+          ? 'bg-white border-slate-200'
+          : 'bg-amber-50/50 border-amber-300 ring-1 ring-amber-200'
+      }`}
+    >
       {/* 상단 바: 코스 번호 + 고정간선/외부용차 전환 + 경유지 편집 + 코스 삭제 */}
       <div className="flex flex-wrap items-center justify-between gap-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
@@ -290,13 +296,24 @@ function TripCardEditor({
               }
               className={`px-2 py-0.5 rounded-md transition ${
                 !isFixedGansen
-                  ? 'bg-[#1E5EFF] text-white shadow-sm'
+                  ? 'bg-amber-600 text-white shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               🚛 외부용차 1장
             </button>
           </div>
+          <span
+            className={`px-1.5 py-0.5 rounded text-[10px] font-black ${
+              isFixedGansen
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'bg-amber-100 text-amber-900'
+            }`}
+          >
+            {isFixedGansen
+              ? '📅 월말 일괄집계 (일별 발행 X)'
+              : '🧾 이 코스만 별도 세금계산서 1장 발행'}
+          </span>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -365,15 +382,27 @@ function TripCardEditor({
       {/* 2행: 청구 거래처명 · 공급가액 · 계산서 발행방식 */}
       <div className="grid grid-cols-12 gap-1.5 items-end">
         <div className={showBizNo ? 'col-span-12 sm:col-span-4' : 'col-span-12 sm:col-span-5'}>
-          <label className="block text-[10px] font-bold text-slate-500 mb-0.5">
-            청구 거래처 (원청/용차업체)
+          <label
+            className={`block text-[10px] font-bold mb-0.5 ${
+              isFixedGansen ? 'text-slate-500' : 'text-amber-800'
+            }`}
+          >
+            {isFixedGansen
+              ? '고정간선 원청 (월말 일괄 합산처)'
+              : '⚠️ 외부용차 청구 거래처 (별도 1장 발행처)'}
           </label>
           <input
             list="bh-contractor-datalist"
-            placeholder="거래처명"
+            placeholder={
+              isFixedGansen
+                ? '고정간선 원청 거래처명'
+                : '용차 청구 업체명 입력 (예: OO물류)'
+            }
             value={trip.clientName}
             onChange={(e) => updateField({ clientName: e.target.value })}
-            className="w-full px-2.5 py-1.5 border rounded-lg font-bold"
+            className={`w-full px-2.5 py-1.5 border rounded-lg font-bold ${
+              isFixedGansen ? 'bg-white' : 'bg-white border-amber-400'
+            }`}
           />
         </div>
         <div className="col-span-6 sm:col-span-4">
@@ -634,6 +663,7 @@ export default function SettlementsView({
   const [showAiKeyBox, setShowAiKeyBox] = useState(false);
   const [savingAiKey, setSavingAiKey] = useState(false);
   const [expandedStopKeys, setExpandedStopKeys] = useState({});
+  const [expandedBundledClients, setExpandedBundledClients] = useState({});
 
   // 기사별 급여 정산 입력 편집 상태
   const [payrollEdits, setPayrollEdits] = useState({});
@@ -2076,13 +2106,7 @@ export default function SettlementsView({
             onClick={openPasteModal}
             className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow whitespace-nowrap"
           >
-            📋 카톡 · 엑셀 배차 붙여넣기
-          </button>
-          <button
-            onClick={() => openDispatchModal()}
-            className="px-4 py-2.5 rounded-xl bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold text-sm shadow whitespace-nowrap"
-          >
-            + 간선 코스(1~3탕) 수동 등록
+            📋 카톡 · 엑셀 · 사진 배차 등록
           </button>
           <button
             onClick={handleDownloadInvoiceExcel}
@@ -2189,20 +2213,20 @@ export default function SettlementsView({
 
               {/* Section 1: 건별 발행 대기 (용차 / 단발 콜) */}
               <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
-                <div className="p-4 border-b bg-blue-50/60 flex flex-wrap items-center justify-between gap-2">
+                <div className="p-4 border-b bg-amber-50/70 flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h2 className="font-black text-slate-900">
-                      ① 건별 세금계산서 목록 — 외부 용차 · 단발 콜 (운행 1건당 1장)
+                      ① 외부 용차 · 단발 콜 세금계산서 (코스별 1건당 1장 즉시 발행)
                     </h2>
                     <p className="text-xs text-slate-600 mt-0.5">
-                      전날 카톡 배차로 등록된 코스나 운행 완료된 단발 콜 건들이 자동으로 올라옵니다.
+                      고정간선 기사가 1·2·3코스 중 <b>2코스만 외부 용차</b>로 운행한 경우에도 그 용차 코스만 여기에 따로 분리되어 바로 세금계산서를 발행·확인할 수 있습니다.
                     </p>
                   </div>
                   <button
-                    onClick={() => openDispatchModal()}
-                    className="px-3 py-1.5 rounded-xl bg-[#1E5EFF] text-white font-bold text-xs"
+                    onClick={openPasteModal}
+                    className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs"
                   >
-                    + 새 용차/코스 등록
+                    📋 배차 · 용차 등록
                   </button>
                 </div>
                 <div className="overflow-x-auto">
@@ -2241,8 +2265,8 @@ export default function SettlementsView({
                             >
                               <td className="p-3 font-bold whitespace-nowrap">
                                 {row.workDate}
-                                <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                                  {row.trip.tripNo}코스
+                                <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-black">
+                                  {row.trip.tripNo}코스 · 외부용차
                                 </span>
                               </td>
                               <td className="p-3 whitespace-nowrap">
@@ -2337,10 +2361,10 @@ export default function SettlementsView({
               <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
                 <div className="p-4 border-b bg-indigo-50/60">
                   <h2 className="font-black text-slate-900">
-                    ② 고정 간선 원청 묶음 발행 (밀크런 + 센터간선 · 원청별 합산 1장)
+                    ② 고정 간선 원청 월간 일괄 집계 (일일이 발행 X · 월 1회 합산 세금계산서)
                   </h2>
                   <p className="text-xs text-slate-600 mt-0.5">
-                    고정 간선 원청 1곳에서 받은 밀크런(1코스)과 센터간선(2·3코스)을 거래처 이름 기준으로 자동 합산합니다.
+                    고정 간선 코스는 매일 세금계산서를 끊지 않고, 한 달 동안 운행한 코스를 원청별로 모두 집계하여 월말에 한 번만 합산 발행합니다.
                   </p>
                 </div>
                 <div className="overflow-x-auto">
@@ -2348,12 +2372,12 @@ export default function SettlementsView({
                     <thead className="bg-slate-50 border-b font-bold text-xs">
                       <tr>
                         <th className="p-3">거래처명</th>
-                        <th className="p-3">운행 기간 · 건수</th>
-                        <th className="p-3 text-right">합산 공급가액</th>
+                        <th className="p-3">이번 달 집계 기간 · 코스 내역</th>
+                        <th className="p-3 text-right">월 합산 공급가액</th>
                         <th className="p-3 text-right">부가세(10%)</th>
                         <th className="p-3 text-right">총 합계금액</th>
                         <th className="p-3">발행 상태</th>
-                        <th className="p-3">일괄 처리</th>
+                        <th className="p-3">월 일괄 처리</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
@@ -2363,77 +2387,132 @@ export default function SettlementsView({
                             colSpan="7"
                             className="p-6 text-center text-slate-400 font-semibold"
                           >
-                            표시할 고정 간선 묶음 발행 내역이 없습니다.
+                            표시할 고정 간선 월간 집계 내역이 없습니다.
                           </td>
                         </tr>
                       ) : (
                         filteredBundled.map((g) => {
                           const allIssued = g.pendingCount === 0 && g.issuedCount > 0;
+                          const isExpanded = Boolean(
+                            expandedBundledClients[g.clientName]
+                          );
                           return (
-                            <tr key={g.clientName} className="hover:bg-slate-50">
-                              <td className="p-3 font-black text-slate-900">
-                                {g.clientName}
-                                {g.bizNo && (
-                                  <div className="text-[11px] font-normal text-slate-500">
-                                    {g.bizNo}
+                            <React.Fragment key={g.clientName}>
+                              <tr className="hover:bg-slate-50">
+                                <td className="p-3 font-black text-slate-900">
+                                  {g.clientName}
+                                  {g.bizNo && (
+                                    <div className="text-[11px] font-normal text-slate-500">
+                                      {g.bizNo}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="p-3 text-xs text-slate-600">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="font-bold text-slate-800">
+                                      이번 달 총 {g.items.length}코스 ({g.minDate.slice(5)} ~{' '}
+                                      {g.maxDate.slice(5)})
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setExpandedBundledClients((prev) => ({
+                                          ...prev,
+                                          [g.clientName]: !prev[g.clientName],
+                                        }))
+                                      }
+                                      className="px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-bold text-[11px]"
+                                    >
+                                      {isExpanded
+                                        ? '▲ 코스 내역 접기'
+                                        : `▼ 집계된 ${g.items.length}코스 내역 보기`}
+                                    </button>
                                   </div>
-                                )}
-                              </td>
-                              <td className="p-3 text-xs text-slate-600">
-                                <div className="font-bold text-slate-800">
-                                  총 {g.items.length}건 ({g.minDate.slice(5)} ~{' '}
-                                  {g.maxDate.slice(5)})
-                                </div>
-                                <div className="truncate max-w-xs">
-                                  {g.items
-                                    .slice(0, 3)
-                                    .map((x) => x.trip.courseName || x.driverName)
-                                    .join(', ')}
-                                  {g.items.length > 3 ? ' 외' : ''}
-                                </div>
-                              </td>
-                              <td className="p-3 text-right font-bold">
-                                {g.supplyAmount.toLocaleString()}원
-                              </td>
-                              <td className="p-3 text-right text-slate-500">
-                                {g.vatAmount.toLocaleString()}원
-                              </td>
-                              <td className="p-3 text-right font-black text-indigo-600">
-                                {g.totalAmount.toLocaleString()}원
-                              </td>
-                              <td className="p-3">
-                                {allIssued ? (
-                                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-black">
-                                    ✓ 묶음 발행완료
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-black">
-                                    대기 {g.pendingCount}건
-                                  </span>
-                                )}
-                              </td>
-                              <td className="p-3">
-                                {!allIssued ? (
-                                  <button
-                                    onClick={() =>
-                                      handleToggleBundledGroupInvoice(g, 'issued')
-                                    }
-                                    className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs"
-                                  >
-                                    ✓ 묶음 일괄 발행 완료
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() =>
-                                      handleToggleBundledGroupInvoice(g, 'pending')
-                                    }
-                                    className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 font-bold text-xs"
-                                  >
-                                    대기 복원
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
+                                  <div className="truncate max-w-xs mt-0.5 text-slate-500">
+                                    {g.items
+                                      .slice(0, 3)
+                                      .map((x) => x.trip.courseName || x.driverName)
+                                      .join(', ')}
+                                    {g.items.length > 3 ? ' 외' : ''}
+                                  </div>
+                                </td>
+                                <td className="p-3 text-right font-bold">
+                                  {g.supplyAmount.toLocaleString()}원
+                                </td>
+                                <td className="p-3 text-right text-slate-500">
+                                  {g.vatAmount.toLocaleString()}원
+                                </td>
+                                <td className="p-3 text-right font-black text-indigo-600">
+                                  {g.totalAmount.toLocaleString()}원
+                                </td>
+                                <td className="p-3">
+                                  {allIssued ? (
+                                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-black">
+                                      ✓ 월간 묶음 발행완료
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-xs font-black">
+                                      월말 합산 대기 ({g.pendingCount}코스)
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-3">
+                                  {!allIssued ? (
+                                    <button
+                                      onClick={() =>
+                                        handleToggleBundledGroupInvoice(g, 'issued')
+                                      }
+                                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs"
+                                    >
+                                      ✓ 이번 달 묶음 일괄 발행 완료
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() =>
+                                        handleToggleBundledGroupInvoice(g, 'pending')
+                                      }
+                                      className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 font-bold text-xs"
+                                    >
+                                      대기 복원
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                              {isExpanded && (
+                                <tr className="bg-indigo-50/30">
+                                  <td colSpan="7" className="p-3">
+                                    <div className="rounded-xl bg-white border border-indigo-100 p-3 space-y-1.5 text-xs">
+                                      <div className="font-black text-indigo-900 mb-1">
+                                        📋 [{g.clientName}] {yearMonth} 고정간선 월간 운행 코스 집계 내역 ({g.items.length}코스)
+                                      </div>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5">
+                                        {g.items.map((it, idx) => (
+                                          <div
+                                            key={`${it.recordKey}_${it.tripIdx}_${idx}`}
+                                            className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-2"
+                                          >
+                                            <div className="truncate">
+                                              <span className="font-black text-slate-800 mr-1">
+                                                {it.workDate.slice(5)}
+                                              </span>
+                                              <span className="font-bold text-indigo-700 mr-1">
+                                                {it.driverName}({it.trip.tripNo}코스)
+                                              </span>
+                                              <span className="text-slate-600">
+                                                {it.trip.courseName || '-'}
+                                              </span>
+                                            </div>
+                                            <span className="font-black text-slate-900 shrink-0">
+                                              {it.trip.supplyAmount.toLocaleString()}원
+                                            </span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
                           );
                         })
                       )}
@@ -2700,21 +2779,15 @@ export default function SettlementsView({
                       간선 일별 배차 · 다회차 코스(1~3탕) 내역
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      전날 카톡 단톡방 배차 내용을 미리 입력해 두거나, 퇴근 후 1코스·2코스·3코스 운임을 나눠 기록할 수 있습니다.
+                      고정간선 코스는 월말 원청 일괄집계로 자동 합산되고, 중간에 낀 <b>외부용차 코스(예: 2코스 용차)</b>는 여기서 바로 건별 세금계산서를 발행·확인할 수 있습니다.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       onClick={openPasteModal}
-                      className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm"
+                      className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm"
                     >
-                      📋 카톡 · 엑셀 붙여넣기
-                    </button>
-                    <button
-                      onClick={() => openDispatchModal()}
-                      className="px-4 py-2 rounded-xl bg-[#1E5EFF] hover:bg-blue-700 text-white font-bold text-xs"
-                    >
-                      + 전날 배차 / 다회차 코스 추가
+                      📋 카톡 · 엑셀 · 사진 배차 등록
                     </button>
                   </div>
                 </div>
@@ -2725,7 +2798,7 @@ export default function SettlementsView({
                         <th className="p-3">운행일</th>
                         <th className="p-3">기사 · 차량</th>
                         <th className="p-3">출근 상태</th>
-                        <th className="p-3">1~3코스 (거래처 · 운행코스 · 운임 · 계산서)</th>
+                        <th className="p-3">1~3코스 (고정간선 월합산 vs 외부용차 건별 세금계산서)</th>
                         <th className="p-3 text-right">일 공급가 합계</th>
                         <th className="p-3">수정 · 삭제</th>
                       </tr>
@@ -2741,7 +2814,12 @@ export default function SettlementsView({
                           </td>
                         </tr>
                       ) : (
-                        variableRecords.map((rec) => (
+                        variableRecords.map((rec) => {
+                          const spotSupplySum = rec.trips
+                            .filter((t) => t.invoiceType === 'per_trip')
+                            .reduce((s, t) => s + (Number(t.supplyAmount) || 0), 0);
+                          const fixedSupplySum = rec.totalSupply - spotSupplySum;
+                          return (
                           <tr key={rec.recordKey} className="hover:bg-slate-50 align-top">
                             <td className="p-3 font-bold whitespace-nowrap">
                               {rec.workDate}
@@ -2784,10 +2862,21 @@ export default function SettlementsView({
                                   단가/코스 미입력 ([코스·운임 수정]을 눌러 입력하세요)
                                 </span>
                               ) : (
-                                rec.trips.map((t, i) => (
+                                rec.trips.map((t, i) => {
+                                  const isFixed =
+                                    t.dispatchCategory === 'fixed_gansen' ||
+                                    (t.dispatchCategory !== 'spot_charter' &&
+                                      t.invoiceType === 'bundled');
+                                  const isSpotTrip = !isFixed;
+                                  const isSpotIssued = t.invoiceStatus === 'issued';
+                                  return (
                                   <div
                                     key={i}
-                                    className="px-2.5 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1.5"
+                                    className={`px-2.5 py-2 rounded-xl border text-xs space-y-1.5 ${
+                                      isSpotTrip
+                                        ? 'bg-amber-50/70 border-amber-300'
+                                        : 'bg-slate-50 border-slate-200'
+                                    }`}
                                   >
                                     <div className="flex flex-wrap items-center justify-between gap-2">
                                       <div>
@@ -2795,26 +2884,28 @@ export default function SettlementsView({
                                           {t.tripNo}코스
                                         </span>
                                         <span
-                                          className={`mr-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                            t.dispatchCategory === 'fixed_gansen' ||
-                                            (t.dispatchCategory !== 'spot_charter' &&
-                                              t.invoiceType === 'bundled')
+                                          className={`mr-1.5 px-1.5 py-0.5 rounded text-[10px] font-black ${
+                                            isFixed
                                               ? 'bg-indigo-100 text-indigo-800'
-                                              : 'bg-sky-100 text-sky-800'
+                                              : 'bg-amber-200 text-amber-900'
                                           }`}
                                         >
-                                          {t.dispatchCategory === 'fixed_gansen' ||
-                                          (t.dispatchCategory !== 'spot_charter' &&
-                                            t.invoiceType === 'bundled')
-                                            ? '고정간선'
-                                            : '외부용차'}
+                                          {isFixed
+                                            ? '🏢 고정간선'
+                                            : '🚛 외부용차 (별도 계산서)'}
                                         </span>
                                         {t.dispatchTag && (
                                           <span className="mr-1.5 px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-bold">
                                             {t.dispatchTag}
                                           </span>
                                         )}
-                                        <span className="font-bold text-[#1E5EFF]">
+                                        <span
+                                          className={`font-bold ${
+                                            isSpotTrip
+                                              ? 'text-amber-900'
+                                              : 'text-[#1E5EFF]'
+                                          }`}
+                                        >
                                           [{t.clientName || '거래처 미입력'}]
                                         </span>{' '}
                                         <span className="text-slate-700 font-semibold">
@@ -2826,19 +2917,56 @@ export default function SettlementsView({
                                           </span>
                                         )}
                                       </div>
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        <span
-                                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                            t.invoiceType === 'per_trip'
-                                              ? 'bg-blue-100 text-blue-800'
-                                              : 'bg-indigo-100 text-indigo-800'
-                                          }`}
-                                        >
-                                          {t.invoiceType === 'per_trip'
-                                            ? '건별 1장'
-                                            : '묶음 합산'}
-                                        </span>
-                                        <span className="font-black text-slate-900 tabular-nums">
+                                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                                        {isFixed ? (
+                                          <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[10px] font-bold">
+                                            📅 월말 원청 일괄집계
+                                          </span>
+                                        ) : (
+                                          <>
+                                            <span
+                                              className={`px-1.5 py-0.5 rounded text-[10px] font-black ${
+                                                isSpotIssued
+                                                  ? 'bg-emerald-100 text-emerald-700'
+                                                  : 'bg-amber-100 text-amber-800'
+                                              }`}
+                                            >
+                                              {isSpotIssued
+                                                ? '✓ 계산서 발행완료'
+                                                : '⏳ 계산서 미발행'}
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                handleTogglePerTripInvoice(
+                                                  {
+                                                    recordKey: rec.recordKey,
+                                                    workDate: rec.workDate,
+                                                    driverId: rec.driverId,
+                                                    driverName: rec.driverName,
+                                                    plateNo: rec.plateNo,
+                                                    tripIdx: i,
+                                                    trip: t,
+                                                    allTrips: rec.trips,
+                                                    log: rec.log,
+                                                    disp: rec.disp,
+                                                  },
+                                                  isSpotIssued ? 'pending' : 'issued'
+                                                )
+                                              }
+                                              className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition ${
+                                                isSpotIssued
+                                                  ? 'bg-white border border-slate-300 text-slate-600 hover:bg-slate-100'
+                                                  : 'bg-amber-600 hover:bg-amber-700 text-white shadow-sm'
+                                              }`}
+                                            >
+                                              {isSpotIssued
+                                                ? '대기 복원'
+                                                : '🧾 계산서 발행완료'}
+                                            </button>
+                                          </>
+                                        )}
+                                        <span className="font-black text-slate-900 tabular-nums ml-1">
                                           {t.supplyAmount.toLocaleString()}원
                                         </span>
                                       </div>
@@ -2882,11 +3010,26 @@ export default function SettlementsView({
                                       </div>
                                     )}
                                   </div>
-                                ))
+                                  );
+                                })
                               )}
                             </td>
-                            <td className="p-3 text-right font-black text-[#1E5EFF] whitespace-nowrap">
-                              {rec.totalSupply.toLocaleString()}원
+                            <td className="p-3 text-right whitespace-nowrap">
+                              <div className="font-black text-[#1E5EFF]">
+                                {rec.totalSupply.toLocaleString()}원
+                              </div>
+                              {spotSupplySum > 0 && (
+                                <div className="mt-1 space-y-0.5 text-[11px]">
+                                  {fixedSupplySum > 0 && (
+                                    <div className="text-indigo-700 font-bold">
+                                      고정(월집계): {fixedSupplySum.toLocaleString()}원
+                                    </div>
+                                  )}
+                                  <div className="text-amber-800 font-black">
+                                    용차(별도1장): {spotSupplySum.toLocaleString()}원
+                                  </div>
+                                </div>
+                              )}
                             </td>
                             <td className="p-3 whitespace-nowrap">
                               <div className="flex items-center gap-1.5">
@@ -2920,7 +3063,8 @@ export default function SettlementsView({
                               </div>
                             </td>
                           </tr>
-                        ))
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
@@ -3952,9 +4096,42 @@ export default function SettlementsView({
                       </span>
                     )}
                   </div>
-                  <span className="text-[11px] font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full">
-                    금액은 관리자웹에만 저장됨 (기사앱 비공개)
-                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const workDate = pasteDefaultDate || todayKstStr();
+                        setPasteGroups((prev) => [
+                          ...prev,
+                          {
+                            key: `${workDate}__unmatched_${Date.now()}`,
+                            workDate,
+                            driverId: `unmatched_${Date.now()}`,
+                            isDriverMatched: false,
+                            driverName: '직접 추가 기사',
+                            plateNo: '-',
+                            defaultRouteId: 'route_gansen',
+                            trips: [
+                              makeEmptyTrip(1, {
+                                clientName: pasteContractor,
+                                dispatchCategory: pasteCategory,
+                                invoiceType:
+                                  pasteCategory === 'fixed_gansen'
+                                    ? 'bundled'
+                                    : 'per_trip',
+                              }),
+                            ],
+                          },
+                        ]);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-blue-50 text-[#1E5EFF] border border-blue-200 hover:bg-blue-100 text-[11px] font-bold"
+                    >
+                      + 기사 수동 추가
+                    </button>
+                    <span className="text-[11px] font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full">
+                      금액은 관리자웹에만 저장 (기사앱 비공개)
+                    </span>
+                  </div>
                 </div>
 
                 {pasteGroups.length === 0 && pasteUnmatchedMilkruns.length === 0 ? (

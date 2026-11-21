@@ -47,6 +47,7 @@ export default function DailyLogsView({ adminUid, presetDriverId, onClearPresetD
   )}`;
   const [yearMonth, setYearMonth] = useState(defaultYm);
   const [logs, setLogs] = useState([]);
+  const [dispatchMap, setDispatchMap] = useState({});
   const [loading, setLoading] = useState(true);
 
   const [driverFilter, setDriverFilter] = useState(presetDriverId || '');
@@ -78,18 +79,48 @@ export default function DailyLogsView({ adminUid, presetDriverId, onClearPresetD
   const loadLogs = async () => {
     setLoading(true);
     try {
-      const snap = await getDocs(
-        query(collection(db, 'DailyLogs'), where('yearMonth', '==', yearMonth))
-      );
+      const [snap, dispSnap] = await Promise.all([
+        getDocs(
+          query(collection(db, 'DailyLogs'), where('yearMonth', '==', yearMonth))
+        ),
+        getDocs(
+          query(
+            collection(db, 'Settlements'),
+            where('yearMonth', '==', yearMonth)
+          )
+        ).catch(() => null),
+      ]);
       const list = snap.docs
         .map((d) => ({ id: d.id, ...d.data() }))
         .sort((a, b) => (b.workDate || '').localeCompare(a.workDate || ''));
+      const dMap = {};
+      if (dispSnap) {
+        dispSnap.docs.forEach((d) => {
+          const data = d.data();
+          if (data?.docType === 'dispatch' && data.workDate && data.driverId) {
+            dMap[`${data.workDate}_${data.driverId}`] = data;
+          }
+        });
+      }
+      setDispatchMap(dMap);
       setLogs(list);
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
+  };
+
+  const getLogTrips = (l) => {
+    if (!l) return [];
+    const disp = dispatchMap[`${l.workDate}_${l.driverId}`];
+    if (Array.isArray(disp?.trips) && disp.trips.length > 0) {
+      return disp.trips;
+    }
+    if (Array.isArray(l.trips) && l.trips.length > 0) {
+      return l.trips;
+    }
+    return [];
   };
 
   useEffect(() => {
@@ -392,6 +423,15 @@ export default function DailyLogsView({ adminUid, presetDriverId, onClearPresetD
               <tbody className="divide-y">
                 {filtered.map((l) => {
                   const loc = l.endLocation;
+                  const logTrips = getLogTrips(l);
+                  const tripSupplySum = logTrips.reduce(
+                    (s, t) => s + (Number(t.supplyAmount) || 0),
+                    0
+                  );
+                  const displayPrice =
+                    tripSupplySum > 0
+                      ? tripSupplySum
+                      : Number(l.routePrice) || 0;
                   return (
                     <tr
                       key={l.id}
@@ -405,11 +445,47 @@ export default function DailyLogsView({ adminUid, presetDriverId, onClearPresetD
                         <div className="font-bold">{l.driverName}</div>
                         <div className="text-xs text-slate-500">{l.plateNo}</div>
                       </td>
-                      <td className="p-3">
-                        <div className="font-semibold">{l.routeName}</div>
-                        <div className="text-xs text-[#1E5EFF] font-bold">
-                          {(Number(l.routePrice) || 0).toLocaleString()}원
+                      <td className="p-3 max-w-[290px]">
+                        <div className="font-semibold text-slate-900">
+                          {l.routeName}
                         </div>
+                        <div className="text-xs text-[#1E5EFF] font-bold">
+                          {displayPrice.toLocaleString()}원
+                          {logTrips.length > 0 && (
+                            <span className="ml-1 text-[11px] text-indigo-600 font-black">
+                              ({logTrips.length}코스)
+                            </span>
+                          )}
+                        </div>
+                        {logTrips.length > 0 && (
+                          <div className="mt-1 space-y-0.5">
+                            {logTrips.map((t, ti) => {
+                              const isSpot =
+                                t.dispatchCategory === 'spot_charter' ||
+                                (t.dispatchCategory !== 'fixed_gansen' &&
+                                  t.invoiceType === 'per_trip');
+                              return (
+                                <div
+                                  key={ti}
+                                  className="text-[11px] leading-tight text-slate-700 truncate"
+                                >
+                                  <span
+                                    className={`inline-block mr-1 px-1.5 py-0.2 rounded text-[10px] font-black ${
+                                      isSpot
+                                        ? 'bg-amber-100 text-amber-800'
+                                        : 'bg-indigo-50 text-indigo-700'
+                                    }`}
+                                  >
+                                    {t.tripNo || ti + 1}코스{isSpot ? '·용차' : ''}
+                                  </span>
+                                  <span className="font-semibold">
+                                    {t.courseName || t.clientName || '-'}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </td>
                       <td className="p-3 text-xs">
                         <div>출근: {formatKstTime(l.checkInAt)}</div>
@@ -575,6 +651,121 @@ export default function DailyLogsView({ adminUid, presetDriverId, onClearPresetD
                 ))}
               </div>
             </div>
+
+            {/* 간선 기사 당일 배차 노선표 (1~3코스 및 경유지) */}
+            {(() => {
+              const detailTrips = getLogTrips(selectedLog);
+              if (detailTrips.length === 0) return null;
+              const totalSupply = detailTrips.reduce(
+                (s, t) => s + (Number(t.supplyAmount) || 0),
+                0
+              );
+              return (
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-black text-sm text-slate-900">
+                      🚛 이날 배차 노선표 ({detailTrips.length}코스)
+                    </span>
+                    <span className="font-black text-xs text-[#1E5EFF]">
+                      총 공급가: {totalSupply.toLocaleString()}원
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {detailTrips.map((t, ti) => {
+                      const isSpot =
+                        t.dispatchCategory === 'spot_charter' ||
+                        (t.dispatchCategory !== 'fixed_gansen' &&
+                          t.invoiceType === 'per_trip');
+                      return (
+                        <div
+                          key={ti}
+                          className={`p-3 rounded-xl border text-xs space-y-1.5 ${
+                            isSpot
+                              ? 'bg-amber-50/60 border-amber-300'
+                              : 'bg-white border-slate-200'
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-1.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="px-2 py-0.5 rounded-full bg-slate-900 text-white text-[11px] font-black">
+                                {t.tripNo || ti + 1}코스
+                              </span>
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-black ${
+                                  isSpot
+                                    ? 'bg-amber-200 text-amber-900'
+                                    : 'bg-indigo-100 text-indigo-800'
+                                }`}
+                              >
+                                {isSpot
+                                  ? '🚛 외부용차 (별도 계산서)'
+                                  : '🏢 고정간선 (월말집계)'}
+                              </span>
+                              {t.dispatchTag && (
+                                <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold">
+                                  {t.dispatchTag}
+                                </span>
+                              )}
+                            </div>
+                            <span className="font-black text-[#1E5EFF]">
+                              {(Number(t.supplyAmount) || 0).toLocaleString()}원
+                            </span>
+                          </div>
+                          <div className="font-bold text-slate-900">
+                            {t.courseName || '구간 미입력'}
+                            {(t.loadTime || t.unloadTime) && (
+                              <span className="ml-1.5 text-[11px] font-semibold text-slate-500">
+                                ({t.loadTime || ''}
+                                {t.unloadTime ? ` → ${t.unloadTime}` : ''})
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-600">
+                            청구 거래처: <b>{t.clientName || '-'}</b>
+                            {(t.cargoInfo || t.tempInfo) && (
+                              <span className="ml-1.5 text-slate-500">
+                                · {[t.cargoInfo, t.tempInfo].filter(Boolean).join(' / ')}
+                              </span>
+                            )}
+                          </div>
+                          {Array.isArray(t.stops) && t.stops.length > 0 && (
+                            <div className="pt-1 pl-2 border-l-2 border-blue-200 space-y-1 text-[11px] text-slate-600">
+                              {t.stops.map((st, sIdx) => (
+                                <div key={sIdx}>
+                                  <b
+                                    className={
+                                      st.stopType === '상차'
+                                        ? 'text-blue-700'
+                                        : 'text-teal-700'
+                                    }
+                                  >
+                                    [{st.stopType} {st.time}]
+                                  </b>{' '}
+                                  <b className="text-slate-800">{st.placeName}</b>
+                                  {st.tempBadge && ` · ${st.tempBadge}`}
+                                  {st.palletBadge && ` · ${st.palletBadge}`}
+                                  {st.address && (
+                                    <div className="text-slate-500 pl-2">
+                                      📍 {st.address}
+                                      {st.addressNote
+                                        ? ` (${st.addressNote})`
+                                        : ''}
+                                      {st.contactPhone
+                                        ? ` · 👤 ${st.contactName} ${st.contactPhone}`
+                                        : ''}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* GPS 이동 타임라인 (출근 출발 -> 경유지 -> 퇴근 도착) */}
             <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-200 space-y-3">
